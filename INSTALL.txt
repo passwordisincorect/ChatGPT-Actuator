@@ -1,0 +1,25 @@
+ChatGPT-Actuator 1.0.0 bootstrap release package.
+
+Safe defaults:
+- filesystem read-only, limited to the extracted project folder after setup
+- process listing enabled, process start/stop disabled
+- PowerShell disabled
+- screenshots disabled
+- window inspection enabled, window mutation disabled
+- mouse/keyboard/clipboard disabled
+- UI Automation discovery enabled, UIA actions disabled
+
+Requirements:
+- Windows
+- Python 3.12 x64
+- OpenAI tunnel-client installed
+- a configured/authorized tunnel profile
+
+Install:
+  powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1 -RecreateVenv
+
+Enable additional permissions from the local Admin UI after installation:
+  http://127.0.0.1:8765/
+
+This package is not a standalone executable.
+No API key, DPAPI credential, logs, .venv, build directory, or deployment state is included.

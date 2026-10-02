@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chatgpt-actuator"
+version = "1.0.0"
+description = "A permission-gated Windows MCP actuator for ChatGPT."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=2,<3",
+    "psutil>=6,<8",
+    "Pillow>=10,<13",
+    "pywin32>=306",
+    "pywinauto>=0.6.9,<0.7"
+]
+
+[project.scripts]
+chatgpt-actuator = "chatgpt_actuator.server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

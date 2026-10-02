@@ -1,0 +1,72 @@
+# v1.0.0 release workflow; isolated admin hot-reload fixture.
+name: Validate and Release v1.0.0
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/release-v1.0.0.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create virtual environment
+        shell: pwsh
+        run: python -m venv .venv
+
+      - name: Install project
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+          .\.venv\Scripts\python.exe -m pip install -e .
+
+      - name: Compile and validate dependencies
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m compileall -q src tests scripts\build_release.py scripts\verify_runtime.py
+          .\.venv\Scripts\python.exe -m pip check
+
+      - name: Run CI-safe regression tests
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe -W "error::ResourceWarning" -m unittest tests.test_filesystem tests.test_input_control tests.test_path_guard tests.test_powershell tests.test_process_system tests.test_runtime_admin tests.test_uia_automation tests.test_verified_input -v
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: .\scripts\build-release.ps1
+
+      - name: Create v1.0.0 tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse v1.0.0 >/dev/null 2>&1; then
+            echo "v1.0.0 already exists"
+          else
+            git tag v1.0.0 "$GITHUB_SHA"
+            git push origin refs/tags/v1.0.0
+          fi
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          if (gh release view v1.0.0 2>$null) {
+            Write-Host "Release v1.0.0 already exists."
+          } else {
+            gh release create v1.0.0 dist\ChatGPT-Actuator-1.0.0-bootstrap-portable.zip dist\chatgpt_actuator-1.0.0-py3-none-any.whl dist\SHA256SUMS.txt dist\release-manifest.json --title "ChatGPT-Actuator v1.0.0" --notes-file RELEASE_NOTES_1.0.0.md
+          }

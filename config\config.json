@@ -1,0 +1,116 @@
+{
+  "server": {
+    "name": "ChatGPT-Actuator",
+    "version": "1.0.0"
+  },
+  "filesystem": {
+    "enabled": true,
+    "read_only": true,
+    "allow_create": false,
+    "allow_edit": false,
+    "allow_move": false,
+    "allow_delete": false,
+    "allowed_roots": [
+      "__CHATGPT_ACTUATOR_ROOT__"
+    ],
+    "max_list_items": 500,
+    "max_read_bytes": 1048576,
+    "max_search_results": 200
+  },
+  "process": {
+    "enabled": true,
+    "allow_start": false,
+    "allow_stop": false,
+    "allow_force_kill": false,
+    "protect_system_processes": true,
+    "max_list_items": 300,
+    "stop_timeout_seconds": 5
+  },
+  "system": {
+    "enabled": true
+  },
+  "powershell": {
+    "enabled": false,
+    "allow_execute": false,
+    "executable": "powershell.exe",
+    "default_cwd": "__CHATGPT_ACTUATOR_ROOT__",
+    "allowed_working_roots": [
+      "__CHATGPT_ACTUATOR_ROOT__"
+    ],
+    "default_timeout_seconds": 20,
+    "max_timeout_seconds": 60,
+    "max_output_bytes": 1048576,
+    "max_script_chars": 100000
+  },
+  "screen": {
+    "enabled": false,
+    "default_max_dimension": 1920,
+    "max_allowed_dimension": 7680
+  },
+  "window": {
+    "enabled": true,
+    "allow_focus": false,
+    "allow_state_change": false,
+    "allow_close": false,
+    "protect_actuator_chain": true,
+    "max_list_items": 300,
+    "close_wait_seconds": 2
+  },
+  "mouse": {
+    "enabled": false,
+    "allow_move": false,
+    "allow_click": false,
+    "allow_scroll": false,
+    "max_clicks": 5,
+    "max_move_duration_ms": 5000,
+    "max_scroll_steps": 100
+  },
+  "keyboard": {
+    "enabled": false,
+    "allow_write": false,
+    "allow_press": false,
+    "allow_hotkey": false,
+    "max_text_chars": 10000,
+    "max_hotkey_keys": 8,
+    "max_press_count": 100
+  },
+  "clipboard": {
+    "enabled": false,
+    "allow_read": false,
+    "allow_write": false,
+    "max_chars": 1000000
+  },
+  "verified_input": {
+    "enabled": false,
+    "focus_text_control": true,
+    "verify_keyboard_write": true,
+    "repair_full_selection_failure": true,
+    "rollback_partial_failure": true,
+    "verify_wait_ms": 500,
+    "max_read_chars": 1000000
+  },
+  "ui_automation": {
+    "enabled": true,
+    "allow_focus": false,
+    "allow_invoke": false,
+    "allow_set_value": false,
+    "allow_toggle": false,
+    "allow_select": false,
+    "allow_expand_collapse": false,
+    "max_depth": 10,
+    "max_items": 500,
+    "max_value_chars": 1000000,
+    "verify_wait_ms": 500
+  },
+  "admin": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "allow_config_write": true,
+    "audit_tail_lines": 200
+  },
+  "logging": {
+    "enabled": true,
+    "file": "logs/audit.log"
+  }
+}
