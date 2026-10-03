@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased - local UIA background-first update (2026-10-03)
+
+### Added
+
+- uia_scroll using UI Automation ScrollPattern without the physical mouse wheel.
+- uia_scroll_into_view using ScrollItemPattern.
+- uia_set_range_value for sliders/spinners through RangeValuePattern.
+- uia_text_select_all through TextPattern instead of Ctrl+A.
+- uia_window_action through WindowPattern instead of mouse/hotkey window actions.
+- Five matching Admin UI permission gates.
+
+### Changed
+
+- UIA mutation actions are background-first: auto_focus_window now defaults to false.
+- Current local MCP tool count is 50.
+- Regression suite is 41 tests.
+- Release safe-default generation disables all newly added UIA mutation permissions.
+
+### Verified
+
+- Python compilation passed.
+- 41/41 unit tests passed.
+- Direct MCPServer inspection reports 50 tools and 14 UIA tools.
+- No mouse or keyboard actuator tool was used during this implementation.
+
 ## [1.0.0] - 2026-10-02
 
 First stable release of the current ChatGPT-Actuator architecture.

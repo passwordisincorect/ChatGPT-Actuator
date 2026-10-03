@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from contextlib import contextmanager
 
@@ -400,6 +401,263 @@ class UIAutomationService:
             "after": _EXPAND_NAMES.get(after, str(after)),
         }
 
+    def scroll(
+        self,
+        target_hwnd: int,
+        element_ref: str,
+        direction: str,
+        amount: str = "line",
+        count: int = 1,
+    ) -> dict:
+        """Scroll a UIA ScrollPattern control without moving the physical mouse."""
+        self._require_enabled()
+        if not self.config.allow_scroll:
+            raise PermissionError("UI Automation scrolling is disabled.")
+
+        normalized_direction = str(direction).strip().casefold()
+        normalized_amount = str(amount).strip().casefold()
+        if normalized_direction not in {"up", "down", "left", "right"}:
+            raise ValueError("direction must be up, down, left, or right.")
+        if normalized_amount not in {"line", "page"}:
+            raise ValueError("amount must be line or page.")
+        count = int(count)
+        if not 1 <= count <= 100:
+            raise ValueError("count must be between 1 and 100.")
+
+        with self._com_scope():
+            element = self._resolve_ref(int(target_hwnd), element_ref)
+            iface = self._iface(element, "iface_scroll")
+            if iface is None:
+                raise PermissionError(
+                    "The target element does not expose UI Automation ScrollPattern."
+                )
+            before = {
+                "horizontal_percent": float(iface.CurrentHorizontalScrollPercent),
+                "vertical_percent": float(iface.CurrentVerticalScrollPercent),
+                "horizontally_scrollable": bool(iface.CurrentHorizontallyScrollable),
+                "vertically_scrollable": bool(iface.CurrentVerticallyScrollable),
+            }
+            if normalized_direction in {"up", "down"} and not before["vertically_scrollable"]:
+                raise PermissionError("The target element is not vertically scrollable.")
+            if normalized_direction in {"left", "right"} and not before["horizontally_scrollable"]:
+                raise PermissionError("The target element is not horizontally scrollable.")
+
+            element.scroll(
+                normalized_direction,
+                normalized_amount,
+                count=count,
+                retry_interval=0.02,
+            )
+            after = {
+                "horizontal_percent": float(iface.CurrentHorizontalScrollPercent),
+                "vertical_percent": float(iface.CurrentVerticalScrollPercent),
+                "horizontally_scrollable": bool(iface.CurrentHorizontallyScrollable),
+                "vertically_scrollable": bool(iface.CurrentVerticallyScrollable),
+            }
+
+        self.audit.record(
+            "uia_scroll",
+            target_hwnd=int(target_hwnd),
+            element_ref=element_ref,
+            direction=normalized_direction,
+            amount=normalized_amount,
+            count=count,
+            before=before,
+            after=after,
+        )
+        return {
+            "target_hwnd": int(target_hwnd),
+            "element_ref": element_ref,
+            "direction": normalized_direction,
+            "amount": normalized_amount,
+            "count": count,
+            "before": before,
+            "after": after,
+            "physical_input_used": False,
+        }
+
+    def scroll_into_view(self, target_hwnd: int, element_ref: str) -> dict:
+        """Bring an element into view through ScrollItemPattern without mouse input."""
+        self._require_enabled()
+        if not self.config.allow_scroll_into_view:
+            raise PermissionError("UI Automation ScrollIntoView is disabled.")
+
+        with self._com_scope():
+            element = self._resolve_ref(int(target_hwnd), element_ref)
+            before = self._metadata(int(target_hwnd), element)
+            iface = self._iface(element, "iface_scroll_item")
+            if iface is None:
+                raise PermissionError(
+                    "The target element does not expose UI Automation ScrollItemPattern."
+                )
+            iface.ScrollIntoView()
+
+        time.sleep(min(0.1, max(0.0, self.config.verify_wait_ms / 1000.0)))
+        post = self._post_state(int(target_hwnd), element_ref)
+        self.audit.record(
+            "uia_scroll_into_view",
+            target_hwnd=int(target_hwnd),
+            element_ref=element_ref,
+        )
+        return {
+            "scrolled_into_view": True,
+            "before": before,
+            "physical_input_used": False,
+            **post,
+        }
+
+    def set_range_value(
+        self,
+        target_hwnd: int,
+        element_ref: str,
+        value: float,
+    ) -> dict:
+        """Set a RangeValuePattern control such as a slider without keyboard/mouse input."""
+        self._require_enabled()
+        if not self.config.allow_range_value:
+            raise PermissionError("UI Automation range value setting is disabled.")
+        requested = float(value)
+        if not math.isfinite(requested):
+            raise ValueError("value must be a finite number.")
+
+        with self._com_scope():
+            element = self._resolve_ref(int(target_hwnd), element_ref)
+            iface = self._iface(element, "iface_range_value")
+            if iface is None:
+                raise PermissionError(
+                    "The target element does not expose UI Automation RangeValuePattern."
+                )
+            if bool(iface.CurrentIsReadOnly):
+                raise PermissionError("The target UI Automation range value is read-only.")
+            minimum = float(iface.CurrentMinimum)
+            maximum = float(iface.CurrentMaximum)
+            before = float(iface.CurrentValue)
+            if requested < minimum or requested > maximum:
+                raise ValueError(f"value must be between {minimum} and {maximum}.")
+            iface.SetValue(requested)
+
+        deadline = time.monotonic() + self.config.verify_wait_ms / 1000.0
+        actual = before
+        while True:
+            with self._com_scope():
+                element = self._resolve_ref(int(target_hwnd), element_ref)
+                iface = self._iface(element, "iface_range_value")
+                if iface is None:
+                    break
+                actual = float(iface.CurrentValue)
+            if math.isclose(actual, requested, rel_tol=1e-9, abs_tol=1e-9):
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.03)
+
+        passed = math.isclose(actual, requested, rel_tol=1e-9, abs_tol=1e-9)
+        self.audit.record(
+            "uia_set_range_value",
+            target_hwnd=int(target_hwnd),
+            element_ref=element_ref,
+            before=before,
+            requested=requested,
+            actual=actual,
+            minimum=minimum,
+            maximum=maximum,
+            verification_passed=passed,
+        )
+        return {
+            "status": "verified" if passed else "verification_failed",
+            "verification_passed": passed,
+            "target_hwnd": int(target_hwnd),
+            "element_ref": element_ref,
+            "before": before,
+            "requested": requested,
+            "actual": actual,
+            "minimum": minimum,
+            "maximum": maximum,
+            "physical_input_used": False,
+        }
+
+    def text_select_all(self, target_hwnd: int, element_ref: str) -> dict:
+        """Select the full TextPattern document range without Ctrl+A."""
+        self._require_enabled()
+        if not self.config.allow_text_selection:
+            raise PermissionError("UI Automation text selection is disabled.")
+
+        with self._com_scope():
+            element = self._resolve_ref(int(target_hwnd), element_ref)
+            if bool(getattr(element.element_info, "is_password", False)):
+                raise PermissionError("Text selection is disabled for password controls.")
+            iface = self._iface(element, "iface_text")
+            if iface is None:
+                raise PermissionError(
+                    "The target element does not expose UI Automation TextPattern."
+                )
+            text = str(iface.DocumentRange.GetText(self.config.max_value_chars) or "")
+            iface.DocumentRange.Select()
+
+        self.audit.record(
+            "uia_text_select_all",
+            target_hwnd=int(target_hwnd),
+            element_ref=element_ref,
+            selected_chars=len(text),
+        )
+        return {
+            "target_hwnd": int(target_hwnd),
+            "element_ref": element_ref,
+            "selected_all": True,
+            "selected_chars": len(text),
+            "physical_input_used": False,
+        }
+
+    def window_action(
+        self,
+        target_hwnd: int,
+        element_ref: str,
+        action: str,
+    ) -> dict:
+        """Perform WindowPattern state actions without hotkeys or coordinate input."""
+        self._require_enabled()
+        if not self.config.allow_window_action:
+            raise PermissionError("UI Automation window actions are disabled.")
+        normalized = str(action).strip().casefold()
+        if normalized not in {"minimize", "maximize", "restore", "close"}:
+            raise ValueError("action must be minimize, maximize, restore, or close.")
+
+        with self._com_scope():
+            element = self._resolve_ref(int(target_hwnd), element_ref)
+            iface = self._iface(element, "iface_window")
+            if iface is None:
+                raise PermissionError(
+                    "The target element does not expose UI Automation WindowPattern."
+                )
+            before_state = int(iface.CurrentWindowVisualState)
+            if normalized == "minimize":
+                if not bool(iface.CurrentCanMinimize):
+                    raise PermissionError("The target window cannot be minimized.")
+                iface.SetWindowVisualState(2)
+            elif normalized == "maximize":
+                if not bool(iface.CurrentCanMaximize):
+                    raise PermissionError("The target window cannot be maximized.")
+                iface.SetWindowVisualState(1)
+            elif normalized == "restore":
+                iface.SetWindowVisualState(0)
+            else:
+                iface.Close()
+
+        self.audit.record(
+            "uia_window_action",
+            target_hwnd=int(target_hwnd),
+            element_ref=element_ref,
+            action=normalized,
+            before_state=before_state,
+        )
+        return {
+            "target_hwnd": int(target_hwnd),
+            "element_ref": element_ref,
+            "action": normalized,
+            "before_state": before_state,
+            "physical_input_used": False,
+        }
+
     def _window(self, target_hwnd: int):
         return Desktop(backend="uia").window(handle=int(target_hwnd)).wrapper_object()
 
@@ -493,8 +751,11 @@ class UIAutomationService:
             "toggle": self._iface(element, "iface_toggle") is not None,
             "selection_item": self._iface(element, "iface_selection_item") is not None,
             "expand_collapse": self._iface(element, "iface_expand_collapse") is not None,
+            "scroll": self._iface(element, "iface_scroll") is not None,
             "scroll_item": self._iface(element, "iface_scroll_item") is not None,
+            "range_value": self._iface(element, "iface_range_value") is not None,
             "text": self._iface(element, "iface_text") is not None,
+            "window": self._iface(element, "iface_window") is not None,
         }
 
     def _resolve_ref(self, target_hwnd: int, element_ref: str):

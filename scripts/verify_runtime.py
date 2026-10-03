@@ -126,7 +126,7 @@ async def verify() -> dict:
 
                 result["ok"] = (
                     result["server_version"] == version
-                    and result["tool_count"] == 45
+                    and result["tool_count"] == 50
                     and result["filesystem_roots"] == [str(ROOT)]
                     and result["system_hostname_present"] is True
                     and status == 200

@@ -215,7 +215,13 @@ class VerifiedInputService:
         )
         return result
 
-    def replace_all(self, target_hwnd: int, text: str) -> dict:
+    def replace_all(
+        self,
+        target_hwnd: int,
+        text: str,
+        *,
+        focus_control: bool = False,
+    ) -> dict:
         self._require_enabled()
         if not isinstance(text, str):
             raise TypeError("text must be a string.")
@@ -227,7 +233,7 @@ class VerifiedInputService:
         result = self.set_value_exact(
             int(target_hwnd),
             text,
-            focus_control=True,
+            focus_control=bool(focus_control),
             audit_action="text_replace_all",
         )
         return result

@@ -10,7 +10,7 @@ Version 1.0.0 is the first stable release of the current Windows control-plane a
 
 - Windows desktop actuator
 - MCP over stdio behind OpenAI Secure MCP Tunnel
-- 45 MCP tools
+- 50 MCP tools in the current local development state (the published v1.0.0 release had 45)
 - local Admin UI on `http://127.0.0.1:8765/`
 - tunnel profile: `chatgpt-actuator`
 - default tunnel health: `http://127.0.0.1:8081/healthz`
@@ -48,6 +48,10 @@ Important protections include:
 - loopback-only Admin UI with a random per-process session token
 
 A stale Admin browser tab automatically reloads after a process restart and restores unsaved permission choices for review.
+
+### Local UIA background-first update (unreleased)
+
+The current local source adds five semantic UI Automation actions: uia_scroll, uia_scroll_into_view, uia_set_range_value, uia_text_select_all, and uia_window_action. Existing UIA mutation tools now default to auto_focus_window=false, so they attempt background semantic actions first. These UIA actions do not synthesize physical mouse or keyboard input. Mouse and keyboard tools remain available only as explicit fallback capabilities.
 
 ## Deployment
 
@@ -164,12 +168,12 @@ The verifier checks:
 1. PowerShell syntax
 2. Python compilation
 3. pip dependency consistency
-4. full 39-test regression suite with `ResourceWarning` treated as an error
+4. full 41-test regression suite with `ResourceWarning` treated as an error
 5. isolated MCP/Admin runtime smoke test
 6. reproducible ZIP and wheel builds
 7. final release artifact build
 
-Expected MCP tool count: **45**.
+Expected MCP tool count for the current local development state: **50**.
 
 Before v1.0.0 was published, the release candidate also passed live end-to-end testing through ChatGPT → Secure MCP Tunnel → ChatGPT-Actuator → Windows, including UI Automation tab selection, verified text replacement/read-back, dialog handling and autostart-after-reboot.
 

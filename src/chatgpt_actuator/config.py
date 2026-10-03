@@ -119,6 +119,11 @@ class UIAutomationConfig:
     allow_toggle: bool
     allow_select: bool
     allow_expand_collapse: bool
+    allow_scroll: bool
+    allow_scroll_into_view: bool
+    allow_range_value: bool
+    allow_text_selection: bool
+    allow_window_action: bool
     max_depth: int
     max_items: int
     max_value_chars: int
@@ -315,6 +320,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             allow_toggle=bool(ui_automation_cfg.get("allow_toggle", True)),
             allow_select=bool(ui_automation_cfg.get("allow_select", True)),
             allow_expand_collapse=bool(ui_automation_cfg.get("allow_expand_collapse", True)),
+            allow_scroll=bool(ui_automation_cfg.get("allow_scroll", True)),
+            allow_scroll_into_view=bool(ui_automation_cfg.get("allow_scroll_into_view", True)),
+            allow_range_value=bool(ui_automation_cfg.get("allow_range_value", True)),
+            allow_text_selection=bool(ui_automation_cfg.get("allow_text_selection", True)),
+            allow_window_action=bool(ui_automation_cfg.get("allow_window_action", True)),
             max_depth=int(ui_automation_cfg.get("max_depth", 10)),
             max_items=int(ui_automation_cfg.get("max_items", 500)),
             max_value_chars=int(ui_automation_cfg.get("max_value_chars", 1000000)),

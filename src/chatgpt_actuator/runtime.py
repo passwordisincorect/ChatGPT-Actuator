@@ -267,6 +267,11 @@ class RuntimeManager:
                     "allow_toggle": cfg.ui_automation.allow_toggle,
                     "allow_select": cfg.ui_automation.allow_select,
                     "allow_expand_collapse": cfg.ui_automation.allow_expand_collapse,
+                    "allow_scroll": cfg.ui_automation.allow_scroll,
+                    "allow_scroll_into_view": cfg.ui_automation.allow_scroll_into_view,
+                    "allow_range_value": cfg.ui_automation.allow_range_value,
+                    "allow_text_selection": cfg.ui_automation.allow_text_selection,
+                    "allow_window_action": cfg.ui_automation.allow_window_action,
                 },
             },
             "admin": {

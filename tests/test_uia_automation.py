@@ -18,6 +18,11 @@ class UIAutomationTests(unittest.TestCase):
                 allow_toggle=True,
                 allow_select=True,
                 allow_expand_collapse=True,
+                allow_scroll=True,
+                allow_scroll_into_view=True,
+                allow_range_value=True,
+                allow_text_selection=True,
+                allow_window_action=True,
                 max_depth=10,
                 max_items=500,
                 max_value_chars=1000000,
@@ -53,6 +58,18 @@ class UIAutomationTests(unittest.TestCase):
         service = self.make_service()
         with self.assertRaises(ValueError):
             service.find_elements(12345)
+
+    def test_scroll_validates_before_window_access(self):
+        service = self.make_service()
+        with self.assertRaises(ValueError):
+            service.scroll(12345, "uia:12345:42,1", "diagonal")
+        with self.assertRaises(ValueError):
+            service.scroll(12345, "uia:12345:42,1", "down", count=0)
+
+    def test_range_rejects_non_finite_before_window_access(self):
+        service = self.make_service()
+        with self.assertRaises(ValueError):
+            service.set_range_value(12345, "uia:12345:42,1", float("nan"))
 
 
 if __name__ == "__main__":

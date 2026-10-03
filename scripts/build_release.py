@@ -140,6 +140,11 @@ def write_safe_release_config(stage: Path, version: str) -> None:
     uia["allow_toggle"] = False
     uia["allow_select"] = False
     uia["allow_expand_collapse"] = False
+    uia["allow_scroll"] = False
+    uia["allow_scroll_into_view"] = False
+    uia["allow_range_value"] = False
+    uia["allow_text_selection"] = False
+    uia["allow_window_action"] = False
 
     raw["admin"]["enabled"] = True
     raw["admin"]["host"] = "127.0.0.1"
@@ -198,6 +203,11 @@ def validate_release_tree(stage: Path) -> None:
             and raw["ui_automation"]["allow_toggle"] is False
             and raw["ui_automation"]["allow_select"] is False
             and raw["ui_automation"]["allow_expand_collapse"] is False
+            and raw["ui_automation"]["allow_scroll"] is False
+            and raw["ui_automation"]["allow_scroll_into_view"] is False
+            and raw["ui_automation"]["allow_range_value"] is False
+            and raw["ui_automation"]["allow_text_selection"] is False
+            and raw["ui_automation"]["allow_window_action"] is False
         ),
     }
     failed = [name for name, passed in checks.items() if not passed]

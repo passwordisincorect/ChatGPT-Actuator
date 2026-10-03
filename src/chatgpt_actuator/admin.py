@@ -123,6 +123,12 @@ button.danger{background:#b91c1c}
 <label><input id="uia_toggle" type="checkbox"> Allow toggle</label>
 <label><input id="uia_select" type="checkbox"> Allow select</label>
 <label><input id="uia_expand" type="checkbox"> Allow expand/collapse</label>
+<label><input id="uia_scroll" type="checkbox"> Allow semantic scroll</label>
+<label><input id="uia_scroll_view" type="checkbox"> Allow scroll into view</label>
+<label><input id="uia_range" type="checkbox"> Allow range value</label>
+<label><input id="uia_text_select" type="checkbox"> Allow text selection</label>
+<label><input id="uia_window_action" type="checkbox"> Allow WindowPattern actions</label>
+<div class="small">UIA actions are background-first; physical mouse/keyboard input is not used.</div>
 </div>
 </div>
 
@@ -170,6 +176,7 @@ function fill(s){
   $('verified_repair').checked=c.verified_input.repair_full_selection_failure;$('verified_rollback').checked=c.verified_input.rollback_partial_failure;
   $('uia_enabled').checked=c.ui_automation.enabled;$('uia_focus').checked=c.ui_automation.allow_focus;$('uia_invoke').checked=c.ui_automation.allow_invoke;
   $('uia_value').checked=c.ui_automation.allow_set_value;$('uia_toggle').checked=c.ui_automation.allow_toggle;$('uia_select').checked=c.ui_automation.allow_select;$('uia_expand').checked=c.ui_automation.allow_expand_collapse;
+  $('uia_scroll').checked=c.ui_automation.allow_scroll;$('uia_scroll_view').checked=c.ui_automation.allow_scroll_into_view;$('uia_range').checked=c.ui_automation.allow_range_value;$('uia_text_select').checked=c.ui_automation.allow_text_selection;$('uia_window_action').checked=c.ui_automation.allow_window_action;
 }
 function applyPendingPatch(p){
   if(!p) return;
@@ -185,7 +192,7 @@ function applyPendingPatch(p){
   if(c.keyboard){set('keyboard_enabled',c.keyboard.enabled);set('keyboard_write',c.keyboard.allow_write);set('keyboard_press',c.keyboard.allow_press);set('keyboard_hotkey',c.keyboard.allow_hotkey);}
   if(c.clipboard){set('clipboard_enabled',c.clipboard.enabled);set('clipboard_read',c.clipboard.allow_read);set('clipboard_write',c.clipboard.allow_write);}
   if(c.verified_input){set('verified_enabled',c.verified_input.enabled);set('verified_verify',c.verified_input.verify_keyboard_write);set('verified_repair',c.verified_input.repair_full_selection_failure);set('verified_rollback',c.verified_input.rollback_partial_failure);}
-  if(c.ui_automation){set('uia_enabled',c.ui_automation.enabled);set('uia_focus',c.ui_automation.allow_focus);set('uia_invoke',c.ui_automation.allow_invoke);set('uia_value',c.ui_automation.allow_set_value);set('uia_toggle',c.ui_automation.allow_toggle);set('uia_select',c.ui_automation.allow_select);set('uia_expand',c.ui_automation.allow_expand_collapse);}
+  if(c.ui_automation){set('uia_enabled',c.ui_automation.enabled);set('uia_focus',c.ui_automation.allow_focus);set('uia_invoke',c.ui_automation.allow_invoke);set('uia_value',c.ui_automation.allow_set_value);set('uia_toggle',c.ui_automation.allow_toggle);set('uia_select',c.ui_automation.allow_select);set('uia_expand',c.ui_automation.allow_expand_collapse);set('uia_scroll',c.ui_automation.allow_scroll);set('uia_scroll_view',c.ui_automation.allow_scroll_into_view);set('uia_range',c.ui_automation.allow_range_value);set('uia_text_select',c.ui_automation.allow_text_selection);set('uia_window_action',c.ui_automation.allow_window_action);}
 }
 async function load(){
   try{
@@ -214,7 +221,7 @@ function patch(){
   keyboard:{enabled:checked('keyboard_enabled'),allow_write:checked('keyboard_write'),allow_press:checked('keyboard_press'),allow_hotkey:checked('keyboard_hotkey')},
   clipboard:{enabled:checked('clipboard_enabled'),allow_read:checked('clipboard_read'),allow_write:checked('clipboard_write')},
   verified_input:{enabled:checked('verified_enabled'),verify_keyboard_write:checked('verified_verify'),repair_full_selection_failure:checked('verified_repair'),rollback_partial_failure:checked('verified_rollback')},
-  ui_automation:{enabled:checked('uia_enabled'),allow_focus:checked('uia_focus'),allow_invoke:checked('uia_invoke'),allow_set_value:checked('uia_value'),allow_toggle:checked('uia_toggle'),allow_select:checked('uia_select'),allow_expand_collapse:checked('uia_expand')}
+  ui_automation:{enabled:checked('uia_enabled'),allow_focus:checked('uia_focus'),allow_invoke:checked('uia_invoke'),allow_set_value:checked('uia_value'),allow_toggle:checked('uia_toggle'),allow_select:checked('uia_select'),allow_expand_collapse:checked('uia_expand'),allow_scroll:checked('uia_scroll'),allow_scroll_into_view:checked('uia_scroll_view'),allow_range_value:checked('uia_range'),allow_text_selection:checked('uia_text_select'),allow_window_action:checked('uia_window_action')}
  };
 }
 async function save(){

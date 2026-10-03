@@ -410,11 +410,13 @@ def keyboard_hotkey(
 def text_replace_all(
     text: str,
     target_hwnd: int,
-    auto_focus: bool = True,
+    auto_focus: bool = False,
 ) -> dict:
     """Replace the entire value of the primary editable Document/Edit control inside target_hwnd using UI Automation ValuePattern, then read it back and verify an exact match. Prefer this tool when the user explicitly asks to replace all text."""
-    target = window.prepare_input_target(target_hwnd, auto_focus=auto_focus)
-    result = verified_input.replace_all(target_hwnd, text)
+    target = None
+    if auto_focus:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
+    result = verified_input.replace_all(target_hwnd, text, focus_control=auto_focus)
     return {
         **result,
         "target": target,
@@ -492,7 +494,7 @@ def uia_focus(
     element_ref: str,
     auto_focus_window: bool = True,
 ) -> dict:
-    """Focus a specific semantic control. The top-level target window is verified first."""
+    """Focus a specific semantic control. The top-level target window is focused only when auto_focus_window=true; background operation is the default."""
     target = window.prepare_input_target(target_hwnd, auto_focus=auto_focus_window)
     result = uia.focus(target_hwnd=target_hwnd, element_ref=element_ref)
     return {**result, "target": target}
@@ -502,12 +504,14 @@ def uia_focus(
 def uia_invoke(
     target_hwnd: int,
     element_ref: str,
-    auto_focus_window: bool = True,
+    auto_focus_window: bool = False,
 ) -> dict:
     """Invoke a control through UI Automation InvokePattern, for example a Button or invokable MenuItem. No coordinate click is used."""
-    target = window.prepare_input_target(target_hwnd, auto_focus=auto_focus_window)
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
     result = uia.invoke(target_hwnd=target_hwnd, element_ref=element_ref)
-    return {**result, "target": target}
+    return {**result, "target": target, "background_requested": not auto_focus_window}
 
 
 @mcp.tool(title="Set UI Automation value", annotations=WRITE_DESTRUCTIVE)
@@ -515,40 +519,46 @@ def uia_set_value(
     target_hwnd: int,
     element_ref: str,
     value: str,
-    auto_focus_window: bool = True,
+    auto_focus_window: bool = False,
 ) -> dict:
     """Set a writable non-password ValuePattern control and verify the exact resulting value. The value is not stored verbatim in audit logs."""
-    target = window.prepare_input_target(target_hwnd, auto_focus=auto_focus_window)
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
     result = uia.set_value(
         target_hwnd=target_hwnd,
         element_ref=element_ref,
         value=value,
     )
-    return {**result, "target": target}
+    return {**result, "target": target, "background_requested": not auto_focus_window}
 
 
 @mcp.tool(title="Toggle UI Automation control", annotations=WRITE_DESTRUCTIVE)
 def uia_toggle(
     target_hwnd: int,
     element_ref: str,
-    auto_focus_window: bool = True,
+    auto_focus_window: bool = False,
 ) -> dict:
     """Toggle a CheckBox or other TogglePattern control and report the before/after state."""
-    target = window.prepare_input_target(target_hwnd, auto_focus=auto_focus_window)
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
     result = uia.toggle(target_hwnd=target_hwnd, element_ref=element_ref)
-    return {**result, "target": target}
+    return {**result, "target": target, "background_requested": not auto_focus_window}
 
 
 @mcp.tool(title="Select UI Automation item", annotations=WRITE_DESTRUCTIVE)
 def uia_select(
     target_hwnd: int,
     element_ref: str,
-    auto_focus_window: bool = True,
+    auto_focus_window: bool = False,
 ) -> dict:
     """Select a TabItem, ListItem, TreeItem, or other SelectionItemPattern control."""
-    target = window.prepare_input_target(target_hwnd, auto_focus=auto_focus_window)
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
     result = uia.select(target_hwnd=target_hwnd, element_ref=element_ref)
-    return {**result, "target": target}
+    return {**result, "target": target, "background_requested": not auto_focus_window}
 
 
 @mcp.tool(title="Expand or collapse UI Automation control", annotations=WRITE_DESTRUCTIVE)
@@ -556,16 +566,107 @@ def uia_expand_collapse(
     target_hwnd: int,
     element_ref: str,
     action: str,
-    auto_focus_window: bool = True,
+    auto_focus_window: bool = False,
 ) -> dict:
     """Expand or collapse a control that exposes UI Automation ExpandCollapsePattern."""
-    target = window.prepare_input_target(target_hwnd, auto_focus=auto_focus_window)
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
     result = uia.expand_collapse(
         target_hwnd=target_hwnd,
         element_ref=element_ref,
         action=action,
     )
-    return {**result, "target": target}
+    return {**result, "target": target, "background_requested": not auto_focus_window}
+
+
+@mcp.tool(title="Scroll UI Automation control", annotations=WRITE_STATEFUL)
+def uia_scroll(
+    target_hwnd: int,
+    element_ref: str,
+    direction: str,
+    amount: str = "line",
+    count: int = 1,
+    auto_focus_window: bool = False,
+) -> dict:
+    """Scroll through UI Automation ScrollPattern. No physical mouse wheel is used; background operation is the default."""
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
+    result = uia.scroll(
+        target_hwnd=target_hwnd,
+        element_ref=element_ref,
+        direction=direction,
+        amount=amount,
+        count=count,
+    )
+    return {**result, "target": target, "background_requested": not auto_focus_window}
+
+
+@mcp.tool(title="Scroll UI Automation item into view", annotations=WRITE_STATEFUL)
+def uia_scroll_into_view(
+    target_hwnd: int,
+    element_ref: str,
+    auto_focus_window: bool = False,
+) -> dict:
+    """Bring a semantic control into view via ScrollItemPattern without moving the physical mouse."""
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
+    result = uia.scroll_into_view(target_hwnd=target_hwnd, element_ref=element_ref)
+    return {**result, "target": target, "background_requested": not auto_focus_window}
+
+
+@mcp.tool(title="Set UI Automation range value", annotations=WRITE_DESTRUCTIVE)
+def uia_set_range_value(
+    target_hwnd: int,
+    element_ref: str,
+    value: float,
+    auto_focus_window: bool = False,
+) -> dict:
+    """Set a slider/spinner RangeValuePattern directly without mouse dragging or keyboard input."""
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
+    result = uia.set_range_value(
+        target_hwnd=target_hwnd,
+        element_ref=element_ref,
+        value=value,
+    )
+    return {**result, "target": target, "background_requested": not auto_focus_window}
+
+
+@mcp.tool(title="Select all text with UI Automation", annotations=WRITE_STATEFUL)
+def uia_text_select_all(
+    target_hwnd: int,
+    element_ref: str,
+    auto_focus_window: bool = False,
+) -> dict:
+    """Select a TextPattern document range directly, replacing Ctrl+A where the provider supports it."""
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
+    result = uia.text_select_all(target_hwnd=target_hwnd, element_ref=element_ref)
+    return {**result, "target": target, "background_requested": not auto_focus_window}
+
+
+@mcp.tool(title="Run UI Automation window action", annotations=WRITE_DESTRUCTIVE)
+def uia_window_action(
+    target_hwnd: int,
+    element_ref: str,
+    action: str,
+    auto_focus_window: bool = False,
+) -> dict:
+    """Minimize, maximize, restore, or close through WindowPattern without keyboard hotkeys or mouse input."""
+    target = None
+    if auto_focus_window:
+        target = window.prepare_input_target(target_hwnd, auto_focus=True)
+    result = uia.window_action(
+        target_hwnd=target_hwnd,
+        element_ref=element_ref,
+        action=action,
+    )
+    return {**result, "target": target, "background_requested": not auto_focus_window}
 
 
 # ----------------------------

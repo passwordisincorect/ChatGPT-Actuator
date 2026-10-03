@@ -10,7 +10,7 @@ Phiên bản 1.0.0 là bản stable đầu tiên của kiến trúc Windows cont
 
 - Actuator chạy trên Windows desktop
 - MCP qua stdio phía sau OpenAI Secure MCP Tunnel
-- 45 MCP tools
+- 50 MCP tools ở trạng thái phát triển local hiện tại (bản phát hành v1.0.0 có 45 tool)
 - Admin UI cục bộ tại `http://127.0.0.1:8765/`
 - tunnel profile: `chatgpt-actuator`
 - health endpoint mặc định: `http://127.0.0.1:8081/healthz`
@@ -48,6 +48,10 @@ Các lớp bảo vệ chính gồm:
 - Admin UI chỉ bind loopback và dùng token ngẫu nhiên theo process
 
 Nếu tab Admin cũ bị stale sau khi process restart, trang có thể tự reload và khôi phục các lựa chọn quyền chưa lưu để bạn kiểm tra lại.
+
+### Cập nhật UIA background-first local (chưa phát hành)
+
+Source local hiện tại bổ sung năm semantic action: uia_scroll, uia_scroll_into_view, uia_set_range_value, uia_text_select_all và uia_window_action. Các UIA mutation tool hiện mặc định auto_focus_window=false, ưu tiên thao tác nền qua UI Automation. Những UIA action này không giả lập chuột hoặc bàn phím vật lý. Nhóm mouse/keyboard vẫn được giữ lại như fallback cần được gọi rõ ràng.
 
 ## Cài đặt
 
@@ -164,12 +168,12 @@ Verifier kiểm tra:
 1. cú pháp PowerShell
 2. compile Python
 3. tính nhất quán dependency với pip
-4. toàn bộ 39 regression tests với `ResourceWarning` được coi là lỗi
+4. toàn bộ 41 regression tests với `ResourceWarning` được coi là lỗi
 5. smoke test MCP/Admin runtime độc lập
 6. khả năng build ZIP và wheel reproducible
 7. build artifact release cuối
 
-Số MCP tool kỳ vọng: **45**.
+Số MCP tool kỳ vọng ở trạng thái phát triển local hiện tại: **50**.
 
 Trước khi phát hành v1.0.0, release candidate cũng đã vượt qua test end-to-end thực tế theo đường ChatGPT → Secure MCP Tunnel → ChatGPT-Actuator → Windows, gồm chọn tab bằng UI Automation, verified text replacement/read-back, xử lý dialog và autostart sau reboot.
 
