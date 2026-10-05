@@ -1,16 +1,16 @@
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-# ChatGPT-Actuator 1.0.0
+# ChatGPT-Actuator 1.1.0
 
 ChatGPT-Actuator is a permission-gated Windows MCP actuator for ChatGPT.
 
-Version 1.0.0 is the first stable release of the current Windows control-plane architecture.
+Version 1.1.0 is the current stable baseline of the Windows control-plane architecture.
 
 ## Runtime
 
 - Windows desktop actuator
 - MCP over stdio behind OpenAI Secure MCP Tunnel
-- 50 MCP tools in the current local development state (the published v1.0.0 release had 45)
+- 73 MCP tools in the current v1.1.0 baseline (the published v1.0.0 release had 45)
 - local Admin UI on `http://127.0.0.1:8765/`
 - tunnel profile: `chatgpt-actuator`
 - default tunnel health: `http://127.0.0.1:8081/healthz`
@@ -28,6 +28,8 @@ Version 1.0.0 is the first stable release of the current Windows control-plane a
 - Clipboard
 - Verified text input
 - Windows UI Automation
+- Browser DOM automation via Playwright + loopback-only CDP
+- EDA project inspection plus guarded KiCad ERC/DRC and Gerber export
 
 ## Security model
 
@@ -43,15 +45,18 @@ Important protections include:
 - constrained PowerShell working roots
 - target-window verification for keyboard input
 - semantic UI Automation actions with window-bound element references
+- browser DOM host allowlist and loopback-only CDP endpoint
 - password controls excluded from generic value read/set
 - audit logging without plaintext keyboard/clipboard secrets
 - loopback-only Admin UI with a random per-process session token
 
 A stale Admin browser tab automatically reloads after a process restart and restores unsaved permission choices for review.
 
-### Local UIA background-first update (unreleased)
+### v1.1.0 background-first UIA, Browser DOM, routing and EDA update
 
 The current local source adds five semantic UI Automation actions: uia_scroll, uia_scroll_into_view, uia_set_range_value, uia_text_select_all, and uia_window_action. Existing UIA mutation tools now default to auto_focus_window=false, so they attempt background semantic actions first. These UIA actions do not synthesize physical mouse or keyboard input. Mouse and keyboard tools remain available only as explicit fallback capabilities.
+
+The v1.1.0 baseline includes 14 browser DOM tools backed by Playwright attached to Microsoft Edge through CDP: dom_list_tabs, dom_find, dom_details, dom_read_text, dom_click, dom_set_value, dom_select, dom_toggle, dom_scroll_into_view, dom_scroll, dom_wait, dom_open_tab, dom_navigate, and dom_close_tab. CDP supports auto-discovery through Edge's local DevToolsActivePort file (for an edge://inspect-enabled existing browser) or an explicit loopback endpoint; DOM access is further restricted by an allowed-host list. DOM actions do not use the physical OS mouse or keyboard.
 
 ## Deployment
 
@@ -151,6 +156,8 @@ On a fresh extracted package:
 - mouse, keyboard and clipboard are disabled
 - verified input is disabled
 - UI Automation discovery is enabled, but semantic actions are disabled
+- Browser DOM is present but read/mutation/navigation permissions are disabled, auto-launch is disabled, and allowed hosts are empty by default in release artifacts
+- EDA inspection is read-only and rooted to the extracted project; edit/manufacturing actions are disabled and external tool paths are unset
 - Admin UI is enabled on loopback only
 
 Permissions can then be explicitly enabled from the local Admin UI.
@@ -168,12 +175,12 @@ The verifier checks:
 1. PowerShell syntax
 2. Python compilation
 3. pip dependency consistency
-4. full 41-test regression suite with `ResourceWarning` treated as an error
+4. full 104-test regression suite with `ResourceWarning` treated as an error
 5. isolated MCP/Admin runtime smoke test
 6. reproducible ZIP and wheel builds
 7. final release artifact build
 
-Expected MCP tool count for the current local development state: **50**.
+Expected MCP tool count for the current v1.1.0 baseline: **73**.
 
 Before v1.0.0 was published, the release candidate also passed live end-to-end testing through ChatGPT → Secure MCP Tunnel → ChatGPT-Actuator → Windows, including UI Automation tab selection, verified text replacement/read-back, dialog handling and autostart-after-reboot.
 

@@ -16,6 +16,7 @@ from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
+EXPECTED_TOOL_COUNT = 73
 
 
 def expected_version() -> str:
@@ -105,6 +106,7 @@ async def verify() -> dict:
             "ok": False,
             "expected_version": version,
             "admin_port": port,
+            "expected_tool_count": EXPECTED_TOOL_COUNT,
         }
 
         async with stdio_client(params) as (read, write):
@@ -126,7 +128,7 @@ async def verify() -> dict:
 
                 result["ok"] = (
                     result["server_version"] == version
-                    and result["tool_count"] == 50
+                    and result["tool_count"] == EXPECTED_TOOL_COUNT
                     and result["filesystem_roots"] == [str(ROOT)]
                     and result["system_hostname_present"] is True
                     and status == 200

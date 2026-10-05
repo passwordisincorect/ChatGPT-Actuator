@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from chatgpt_actuator.audit import AuditLogger
 from chatgpt_actuator.config import UIAutomationConfig
@@ -71,6 +72,60 @@ class UIAutomationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             service.set_range_value(12345, "uia:12345:42,1", float("nan"))
 
+    def test_target_window_guard_rejects_foreign_chromium_runtime_hwnd(self):
+        service = self.make_service()
+
+        class Info:
+            handle = None
+            runtime_id = (42, 22222, 4, 1)
+
+        class Element:
+            element_info = Info()
+
+        with patch("chatgpt_actuator.tools.ui_automation.win32gui.IsWindow", return_value=True), patch(
+            "chatgpt_actuator.tools.ui_automation.win32gui.GetAncestor", return_value=33333
+        ):
+            self.assertFalse(service._belongs_to_target_window(11111, Element()))
+
+    def test_target_window_guard_accepts_descendant_hwnd(self):
+        service = self.make_service()
+
+        class Info:
+            handle = 22222
+            runtime_id = (42, 22222, 4, 1)
+
+        class Element:
+            element_info = Info()
+
+        with patch("chatgpt_actuator.tools.ui_automation.win32gui.IsWindow", return_value=True), patch(
+            "chatgpt_actuator.tools.ui_automation.win32gui.GetAncestor", return_value=11111
+        ):
+            self.assertTrue(service._belongs_to_target_window(11111, Element()))
+
+    def test_walk_prunes_foreign_subtree(self):
+        service = self.make_service()
+
+        class Element:
+            def __init__(self, name, children=None):
+                self.name = name
+                self._children = children or []
+
+            def children(self):
+                return self._children
+
+        foreign_leaf = Element("foreign-leaf")
+        foreign = Element("foreign", [foreign_leaf])
+        local = Element("local")
+        root = Element("root", [foreign, local])
+
+        with patch.object(
+            service,
+            "_belongs_to_target_window",
+            side_effect=lambda _hwnd, element: element.name != "foreign",
+        ):
+            walked = [element.name for _depth, element in service._walk(root, 3, target_hwnd=11111)]
+
+        self.assertEqual(walked, ["root", "local"])
 
 if __name__ == "__main__":
     unittest.main()

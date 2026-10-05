@@ -146,6 +146,30 @@ def write_safe_release_config(stage: Path, version: str) -> None:
     uia["allow_text_selection"] = False
     uia["allow_window_action"] = False
 
+    dom = raw["browser_dom"]
+    dom["enabled"] = True
+    dom["allow_read"] = False
+    dom["allow_click"] = False
+    dom["allow_set_value"] = False
+    dom["allow_select"] = False
+    dom["allow_toggle"] = False
+    dom["allow_scroll"] = False
+    dom["allow_navigation"] = False
+    dom["cdp_url"] = "auto"
+    dom["user_data_dir"] = r"%LOCALAPPDATA%\Microsoft\Edge\User Data"
+    dom["allowed_hosts"] = []
+    dom["launch_if_missing"] = False
+    dom["auto_allow_remote_debugging"] = False
+
+    eda = raw["eda"]
+    eda["enabled"] = True
+    eda["allow_read"] = True
+    eda["allow_edit"] = False
+    eda["allow_manufacturing"] = False
+    eda["allowed_project_roots"] = [PLACEHOLDER_ROOT]
+    eda["kicad_cli"] = ""
+    eda["altium_executable"] = ""
+
     raw["admin"]["enabled"] = True
     raw["admin"]["host"] = "127.0.0.1"
     raw["admin"]["port"] = 8765
@@ -196,6 +220,28 @@ def validate_release_tree(stage: Path) -> None:
         "keyboard.disabled": raw["keyboard"]["enabled"] is False,
         "clipboard.disabled": raw["clipboard"]["enabled"] is False,
         "verified_input.disabled": raw["verified_input"]["enabled"] is False,
+        "dom.actions_disabled": (
+            raw["browser_dom"]["allow_read"] is False
+            and raw["browser_dom"]["allow_click"] is False
+            and raw["browser_dom"]["allow_set_value"] is False
+            and raw["browser_dom"]["allow_select"] is False
+            and raw["browser_dom"]["allow_toggle"] is False
+            and raw["browser_dom"]["allow_scroll"] is False
+            and raw["browser_dom"]["allow_navigation"] is False
+            and raw["browser_dom"]["allowed_hosts"] == []
+            and raw["browser_dom"]["launch_if_missing"] is False
+            and raw["browser_dom"]["auto_allow_remote_debugging"] is False
+        ),
+        "dom.local_connect_only": (raw["browser_dom"]["cdp_url"] == "auto"),
+        "eda.safe_defaults": (
+            raw["eda"]["enabled"] is True
+            and raw["eda"]["allow_read"] is True
+            and raw["eda"]["allow_edit"] is False
+            and raw["eda"]["allow_manufacturing"] is False
+            and raw["eda"]["allowed_project_roots"] == [PLACEHOLDER_ROOT]
+            and raw["eda"]["kicad_cli"] == ""
+            and raw["eda"]["altium_executable"] == ""
+        ),
         "uia.actions_disabled": (
             raw["ui_automation"]["allow_focus"] is False
             and raw["ui_automation"]["allow_invoke"] is False

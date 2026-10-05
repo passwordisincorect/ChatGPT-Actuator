@@ -3,6 +3,8 @@ from __future__ import annotations
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
+from pathlib import Path
 import secrets
 from threading import Thread
 from urllib.parse import parse_qs, urlparse
@@ -130,6 +132,20 @@ button.danger{background:#b91c1c}
 <label><input id="uia_window_action" type="checkbox"> Allow WindowPattern actions</label>
 <div class="small">UIA actions are background-first; physical mouse/keyboard input is not used.</div>
 </div>
+
+<div class="card"><h2>Browser DOM (Playwright + CDP)</h2>
+<label><input id="dom_enabled" type="checkbox"> Enabled</label>
+<label><input id="dom_read" type="checkbox"> Allow DOM read</label>
+<label><input id="dom_click" type="checkbox"> Allow DOM click</label>
+<label><input id="dom_value" type="checkbox"> Allow form value changes</label>
+<label><input id="dom_select" type="checkbox"> Allow option selection</label>
+<label><input id="dom_toggle" type="checkbox"> Allow checkbox/radio changes</label>
+<label><input id="dom_scroll" type="checkbox"> Allow DOM scroll</label>
+<label>CDP URL or auto<input id="dom_cdp_url" type="text" value="auto"></label>
+<label>Edge user data dir<input id="dom_user_data_dir" type="text" value="%LOCALAPPDATA%\Microsoft\Edge\User Data"></label>
+<label>Allowed hosts (one per line)<textarea id="dom_hosts"></textarea></label>
+<div class="small">CDP is restricted to localhost/127.0.0.1. DOM tools never use the physical OS mouse or keyboard.</div>
+</div>
 </div>
 
 <div class="actions">
@@ -177,6 +193,7 @@ function fill(s){
   $('uia_enabled').checked=c.ui_automation.enabled;$('uia_focus').checked=c.ui_automation.allow_focus;$('uia_invoke').checked=c.ui_automation.allow_invoke;
   $('uia_value').checked=c.ui_automation.allow_set_value;$('uia_toggle').checked=c.ui_automation.allow_toggle;$('uia_select').checked=c.ui_automation.allow_select;$('uia_expand').checked=c.ui_automation.allow_expand_collapse;
   $('uia_scroll').checked=c.ui_automation.allow_scroll;$('uia_scroll_view').checked=c.ui_automation.allow_scroll_into_view;$('uia_range').checked=c.ui_automation.allow_range_value;$('uia_text_select').checked=c.ui_automation.allow_text_selection;$('uia_window_action').checked=c.ui_automation.allow_window_action;
+  $('dom_enabled').checked=c.browser_dom.enabled;$('dom_read').checked=c.browser_dom.allow_read;$('dom_click').checked=c.browser_dom.allow_click;$('dom_value').checked=c.browser_dom.allow_set_value;$('dom_select').checked=c.browser_dom.allow_select;$('dom_toggle').checked=c.browser_dom.allow_toggle;$('dom_scroll').checked=c.browser_dom.allow_scroll;$('dom_cdp_url').value=c.browser_dom.cdp_url;$('dom_user_data_dir').value=c.browser_dom.user_data_dir;$('dom_hosts').value=c.browser_dom.allowed_hosts.join('\n');
 }
 function applyPendingPatch(p){
   if(!p) return;
@@ -193,6 +210,7 @@ function applyPendingPatch(p){
   if(c.clipboard){set('clipboard_enabled',c.clipboard.enabled);set('clipboard_read',c.clipboard.allow_read);set('clipboard_write',c.clipboard.allow_write);}
   if(c.verified_input){set('verified_enabled',c.verified_input.enabled);set('verified_verify',c.verified_input.verify_keyboard_write);set('verified_repair',c.verified_input.repair_full_selection_failure);set('verified_rollback',c.verified_input.rollback_partial_failure);}
   if(c.ui_automation){set('uia_enabled',c.ui_automation.enabled);set('uia_focus',c.ui_automation.allow_focus);set('uia_invoke',c.ui_automation.allow_invoke);set('uia_value',c.ui_automation.allow_set_value);set('uia_toggle',c.ui_automation.allow_toggle);set('uia_select',c.ui_automation.allow_select);set('uia_expand',c.ui_automation.allow_expand_collapse);set('uia_scroll',c.ui_automation.allow_scroll);set('uia_scroll_view',c.ui_automation.allow_scroll_into_view);set('uia_range',c.ui_automation.allow_range_value);set('uia_text_select',c.ui_automation.allow_text_selection);set('uia_window_action',c.ui_automation.allow_window_action);}
+  if(c.browser_dom){set('dom_enabled',c.browser_dom.enabled);set('dom_read',c.browser_dom.allow_read);set('dom_click',c.browser_dom.allow_click);set('dom_value',c.browser_dom.allow_set_value);set('dom_select',c.browser_dom.allow_select);set('dom_toggle',c.browser_dom.allow_toggle);set('dom_scroll',c.browser_dom.allow_scroll);if(c.browser_dom.cdp_url!==undefined)$('dom_cdp_url').value=c.browser_dom.cdp_url;if(c.browser_dom.user_data_dir!==undefined)$('dom_user_data_dir').value=c.browser_dom.user_data_dir;if(c.browser_dom.allowed_hosts)$('dom_hosts').value=c.browser_dom.allowed_hosts.join('\n');}
 }
 async function load(){
   try{
@@ -221,7 +239,8 @@ function patch(){
   keyboard:{enabled:checked('keyboard_enabled'),allow_write:checked('keyboard_write'),allow_press:checked('keyboard_press'),allow_hotkey:checked('keyboard_hotkey')},
   clipboard:{enabled:checked('clipboard_enabled'),allow_read:checked('clipboard_read'),allow_write:checked('clipboard_write')},
   verified_input:{enabled:checked('verified_enabled'),verify_keyboard_write:checked('verified_verify'),repair_full_selection_failure:checked('verified_repair'),rollback_partial_failure:checked('verified_rollback')},
-  ui_automation:{enabled:checked('uia_enabled'),allow_focus:checked('uia_focus'),allow_invoke:checked('uia_invoke'),allow_set_value:checked('uia_value'),allow_toggle:checked('uia_toggle'),allow_select:checked('uia_select'),allow_expand_collapse:checked('uia_expand'),allow_scroll:checked('uia_scroll'),allow_scroll_into_view:checked('uia_scroll_view'),allow_range_value:checked('uia_range'),allow_text_selection:checked('uia_text_select'),allow_window_action:checked('uia_window_action')}
+  ui_automation:{enabled:checked('uia_enabled'),allow_focus:checked('uia_focus'),allow_invoke:checked('uia_invoke'),allow_set_value:checked('uia_value'),allow_toggle:checked('uia_toggle'),allow_select:checked('uia_select'),allow_expand_collapse:checked('uia_expand'),allow_scroll:checked('uia_scroll'),allow_scroll_into_view:checked('uia_scroll_view'),allow_range_value:checked('uia_range'),allow_text_selection:checked('uia_text_select'),allow_window_action:checked('uia_window_action')},
+  browser_dom:{enabled:checked('dom_enabled'),allow_read:checked('dom_read'),allow_click:checked('dom_click'),allow_set_value:checked('dom_value'),allow_select:checked('dom_select'),allow_toggle:checked('dom_toggle'),allow_scroll:checked('dom_scroll'),cdp_url:$('dom_cdp_url').value.trim(),user_data_dir:$('dom_user_data_dir').value.trim(),allowed_hosts:lines('dom_hosts')}
  };
 }
 async function save(){
@@ -259,9 +278,37 @@ load();
 
 
 class AdminServer:
-    def __init__(self, runtime: RuntimeManager) -> None:
+    def __init__(self, runtime: RuntimeManager, dom_host=None) -> None:
         self.runtime = runtime
+        self.dom_host = dom_host
         self.token = secrets.token_urlsafe(32)
+        default_dom_token = (
+            Path(__file__).resolve().parents[2].parent
+            / ".chatgpt-dom-broker-token"
+        )
+        self.dom_token_file = Path(
+            os.environ.get(
+                "CHATGPT_DOM_BROKER_TOKEN_FILE",
+                str(default_dom_token),
+            )
+        )
+        self.dom_token_file.parent.mkdir(parents=True, exist_ok=True)
+        if self.dom_token_file.is_file():
+            self.dom_token = self.dom_token_file.read_text(
+                encoding="utf-8"
+            ).strip()
+        else:
+            self.dom_token = ""
+        if not self.dom_token:
+            self.dom_token = secrets.token_urlsafe(48)
+            self.dom_token_file.write_text(
+                self.dom_token + "\n",
+                encoding="utf-8",
+            )
+            try:
+                os.chmod(self.dom_token_file, 0o600)
+            except OSError:
+                pass
         self._server: ThreadingHTTPServer | None = None
         self._thread: Thread | None = None
 
@@ -280,6 +327,27 @@ class AdminServer:
 
         runtime = self.runtime
         token = self.token
+        dom_host = self.dom_host
+        dom_token = self.dom_token
+        dom_actions = {
+            "list_tabs": "list_tabs",
+            "peek_tabs": "peek_tabs",
+            "ensure_tab_pool": "ensure_tab_pool",
+            "shutdown_worker_edge": "shutdown_worker_edge",
+            "open_tab": "open_tab",
+            "navigate": "navigate",
+            "close_tab": "close_tab",
+            "find": "find",
+            "details": "details",
+            "read_text": "read_text",
+            "click": "click",
+            "set_value": "set_value",
+            "select": "select",
+            "toggle": "toggle",
+            "scroll_into_view": "scroll_into_view",
+            "scroll": "scroll",
+            "wait": "wait",
+        }
         html = _HTML.replace("__TOKEN__", token)
 
         class Handler(BaseHTTPRequestHandler):
@@ -306,6 +374,13 @@ class AdminServer:
             def _token_ok(self) -> bool:
                 provided = self.headers.get("X-Actuator-Admin-Token", "")
                 return secrets.compare_digest(provided, token)
+
+            def _dom_token_ok(self) -> bool:
+                provided = self.headers.get("X-Actuator-DOM-Token", "")
+                return bool(dom_token) and secrets.compare_digest(
+                    provided,
+                    dom_token,
+                )
 
             def _read_json(self) -> dict:
                 raw_len = self.headers.get("Content-Length", "0")
@@ -370,12 +445,74 @@ class AdminServer:
                     )
                     return
 
+                if parsed.path == "/dom/healthz":
+                    self._json(
+                        HTTPStatus.OK,
+                        {
+                            "status": "ok" if dom_host is not None else "disabled",
+                            "service": "chatgpt-actuator-dom-broker",
+                            "version": runtime.config.version,
+                            "generation": runtime.generation,
+                        },
+                    )
+                    return
+
                 self._json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
             def do_POST(self) -> None:
                 if not self._host_ok():
                     self._json(HTTPStatus.FORBIDDEN, {"error": "Invalid Host header."})
                     return
+
+                if self.path == "/api/dom":
+                    if dom_host is None:
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {"error": "DOM broker is disabled."},
+                        )
+                        return
+                    if not self._dom_token_ok():
+                        self._json(
+                            HTTPStatus.FORBIDDEN,
+                            {"error": "Invalid DOM broker token."},
+                        )
+                        return
+                    try:
+                        request = self._read_json()
+                        action = str(request.get("action", "")).strip()
+                        method = dom_actions.get(action)
+                        if method is None:
+                            raise ValueError("Unsupported DOM broker action.")
+                        args = request.get("args", {})
+                        if not isinstance(args, dict):
+                            raise TypeError("args must be a JSON object.")
+                        result = dom_host.call(method, timeout=40.0, **args)
+                        runtime.audit.record(
+                            "dom_broker_call",
+                            broker_action=action,
+                            ok=True,
+                        )
+                        self._json(
+                            HTTPStatus.OK,
+                            {"ok": True, "result": result},
+                        )
+                    except Exception as exc:
+                        runtime.audit.record(
+                            "dom_broker_call",
+                            ok=False,
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                        self._json(
+                            HTTPStatus.BAD_REQUEST,
+                            {
+                                "ok": False,
+                                "error_type": type(exc).__name__,
+                                "error": str(exc),
+                            },
+                        )
+                    return
+
                 if not self._token_ok():
                     self._json(HTTPStatus.FORBIDDEN, {"error": "Invalid admin session token."})
                     return
@@ -408,6 +545,8 @@ class AdminServer:
             "admin_server_started",
             host=cfg.host,
             port=cfg.port,
+            dom_broker=bool(self.dom_host is not None),
+            dom_token_file=str(self.dom_token_file),
         )
 
     def stop(self) -> None:

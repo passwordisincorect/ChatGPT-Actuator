@@ -4,11 +4,15 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from .admin import AdminServer
+from .dom_host import DOMAsyncProxy, DOMExecutionHost
+from .batch import PARALLEL_READ_ONLY_TOOLS, execute_batch
+from .routing_policy import RoutingPolicyEngine
 from .runtime import RuntimeManager
 
 
 runtime = RuntimeManager()
 initial_config = runtime.config
+routing_policy = RoutingPolicyEngine()
 
 filesystem = runtime.proxy("filesystem")
 process_system = runtime.proxy("process_system")
@@ -20,11 +24,14 @@ keyboard = runtime.proxy("keyboard")
 clipboard = runtime.proxy("clipboard")
 verified_input = runtime.proxy("verified_input")
 uia = runtime.proxy("uia")
+dom_host = DOMExecutionHost(runtime)
+dom = DOMAsyncProxy(dom_host)
+eda = runtime.proxy("eda")
 
 mcp = MCPServer(
     name=initial_config.name,
     version=initial_config.version,
-    description="Permission-gated Windows actuator for ChatGPT.",
+    description="Direct local execution plane for ChatGPT MAIN. Prefer for simple local machine actions and short deterministic workflows; use ChatGPT-Orchestrator for independent multi-worker analysis, review/rework, parallel reasoning, or recovery.",
 )
 
 READ_ONLY = ToolAnnotations(
@@ -57,9 +64,62 @@ WRITE_DESTRUCTIVE = ToolAnnotations(
 
 
 # ----------------------------
-# Filesystem tools
+# Routing policy tools
 # ----------------------------
 
+@mcp.tool(title="Read local routing policy", annotations=READ_ONLY)
+def routing_policy_info() -> dict:
+    """Read the local MAIN/Actuator/Orchestrator routing policy and loop guards."""
+    return routing_policy.info()
+
+
+@mcp.tool(title="Recommend execution route", annotations=READ_ONLY)
+def routing_decide(
+    goal: str,
+    origin: str = "main",
+    requires_execution: bool = True,
+    local_machine_action: bool = False,
+    short_deterministic_workflow: bool = False,
+    complex_multi_step: bool = False,
+    independent_workers: bool = False,
+    parallel_reasoning: bool = False,
+    review_rework: bool = False,
+    restart_recovery: bool = False,
+) -> dict:
+    """Recommend DIRECT, ChatGPT-Actuator, or ChatGPT-Orchestrator for an ambiguous execution request.
+
+    This tool only decides a route; it never executes or delegates the goal.
+    MAIN should call it only when routing is genuinely ambiguous. Complex signals
+    take priority over local-action signals so a complex local workflow can be
+    orchestrated first and handed down to Actuator later. Loop guards are read
+    from the local routing-policy.json before a recommendation is returned.
+    """
+    result = routing_policy.decide(
+        goal,
+        origin=origin,
+        requires_execution=requires_execution,
+        local_machine_action=local_machine_action,
+        short_deterministic_workflow=short_deterministic_workflow,
+        complex_multi_step=complex_multi_step,
+        independent_workers=independent_workers,
+        parallel_reasoning=parallel_reasoning,
+        review_rework=review_rework,
+        restart_recovery=restart_recovery,
+    )
+    runtime.audit.record(
+        "routing_decide",
+        origin=result["origin"],
+        requested_route=result["requested_route"],
+        recommended_route=result["recommended_route"],
+        guard_blocked=result["guard"]["blocked"],
+        signals=result["signals"],
+    )
+    return result
+
+
+# ----------------------------
+# Filesystem tools
+# ----------------------------
 @mcp.tool(title="List allowed filesystem roots", annotations=READ_ONLY)
 def filesystem_list_roots() -> dict:
     """List allowed Windows filesystem roots and enabled permissions."""
@@ -669,6 +729,150 @@ def uia_window_action(
     return {**result, "target": target, "background_requested": not auto_focus_window}
 
 
+
+# ----------------------------
+# Browser DOM tools (Playwright + CDP)
+# ----------------------------
+
+@mcp.tool(title="List allowed Edge DOM tabs", annotations=READ_ONLY)
+async def dom_list_tabs() -> dict:
+    """List Edge tabs visible through the configured CDP session and allowed host list."""
+    return await dom.list_tabs()
+
+
+@mcp.tool(title="Open allowed Edge DOM tab", annotations=WRITE_ADDITIVE)
+async def dom_open_tab(url: str, timeout_ms: int | None = None) -> dict:
+    """Open one allowed URL in a new Edge tab through the shared Actuator CDP owner."""
+    return await dom.open_tab(url, timeout_ms=timeout_ms)
+
+
+@mcp.tool(title="Navigate Edge DOM tab", annotations=WRITE_DESTRUCTIVE)
+async def dom_navigate(
+    tab_ref: str,
+    url: str,
+    timeout_ms: int | None = None,
+) -> dict:
+    """Navigate an existing stable DOM tab reference to another allowed URL."""
+    return await dom.navigate(tab_ref, url, timeout_ms=timeout_ms)
+
+
+@mcp.tool(title="Close Edge DOM tab", annotations=WRITE_DESTRUCTIVE)
+async def dom_close_tab(tab_ref: str) -> dict:
+    """Close one Edge tab owned through the shared DOM/CDP connection."""
+    return await dom.close_tab(tab_ref)
+
+
+@mcp.tool(title="Find DOM elements", annotations=READ_ONLY)
+async def dom_find(
+    tab_ref: str,
+    selector: str | None = None,
+    text: str | None = None,
+    role: str | None = None,
+    name: str | None = None,
+    exact: bool = False,
+    max_items: int = 20,
+) -> dict:
+    """Find elements using one strategy: CSS selector, visible text, or accessible role."""
+    return await dom.find(
+        tab_ref,
+        selector=selector,
+        text=text,
+        role=role,
+        name=name,
+        exact=exact,
+        max_items=max_items,
+    )
+
+
+@mcp.tool(title="Get DOM element details", annotations=READ_ONLY)
+async def dom_details(element_ref: str) -> dict:
+    """Return semantic DOM properties and attributes for an opaque element_ref."""
+    return await dom.details(element_ref)
+
+
+@mcp.tool(title="Read DOM element text", annotations=READ_ONLY)
+async def dom_read_text(element_ref: str, max_chars: int | None = None) -> dict:
+    """Read rendered/text content without using keyboard selection or clipboard."""
+    return await dom.read_text(element_ref, max_chars=max_chars)
+
+
+@mcp.tool(title="Click DOM element", annotations=WRITE_DESTRUCTIVE)
+async def dom_click(element_ref: str, timeout_ms: int | None = None) -> dict:
+    """Activate a DOM element through the browser automation layer; no physical OS mouse is used."""
+    return await dom.click(element_ref, timeout_ms=timeout_ms)
+
+
+@mcp.tool(title="Set DOM form value", annotations=WRITE_DESTRUCTIVE)
+async def dom_set_value(
+    element_ref: str,
+    value: str,
+    timeout_ms: int | None = None,
+) -> dict:
+    """Fill an input/textarea through Playwright; no physical keyboard input is used."""
+    return await dom.set_value(element_ref, value=value, timeout_ms=timeout_ms)
+
+
+@mcp.tool(title="Select DOM option", annotations=WRITE_DESTRUCTIVE)
+async def dom_select(
+    element_ref: str,
+    value: str | None = None,
+    label: str | None = None,
+    timeout_ms: int | None = None,
+) -> dict:
+    """Select one HTML option by value or label."""
+    return await dom.select(
+        element_ref,
+        value=value,
+        label=label,
+        timeout_ms=timeout_ms,
+    )
+
+
+@mcp.tool(title="Toggle DOM checkbox", annotations=WRITE_DESTRUCTIVE)
+async def dom_toggle(
+    element_ref: str,
+    checked: bool | None = None,
+    timeout_ms: int | None = None,
+) -> dict:
+    """Check, uncheck, or invert a checkbox/radio-like control semantically."""
+    return await dom.toggle(element_ref, checked=checked, timeout_ms=timeout_ms)
+
+
+@mcp.tool(title="Scroll DOM element into view", annotations=WRITE_STATEFUL)
+async def dom_scroll_into_view(
+    element_ref: str,
+    timeout_ms: int | None = None,
+) -> dict:
+    """Scroll a DOM element into view without moving the physical mouse."""
+    return await dom.scroll_into_view(element_ref, timeout_ms=timeout_ms)
+
+
+@mcp.tool(title="Scroll DOM document or element", annotations=WRITE_STATEFUL)
+async def dom_scroll(
+    tab_ref: str,
+    direction: str,
+    amount: int = 600,
+    element_ref: str | None = None,
+) -> dict:
+    """Scroll with DOM JavaScript in a tab or scrollable element; no physical mouse wheel is used."""
+    return await dom.scroll(
+        tab_ref,
+        direction=direction,
+        amount=amount,
+        element_ref=element_ref,
+    )
+
+
+@mcp.tool(title="Wait for DOM element state", annotations=READ_ONLY)
+async def dom_wait(
+    element_ref: str,
+    state: str = "visible",
+    timeout_ms: int | None = None,
+) -> dict:
+    """Wait until an element is attached, detached, visible, or hidden."""
+    return await dom.wait(element_ref, state=state, timeout_ms=timeout_ms)
+
+
 # ----------------------------
 # Clipboard tools
 # ----------------------------
@@ -685,13 +889,290 @@ def clipboard_write_text(text: str) -> dict:
     return clipboard.write_text(text=text)
 
 
+# ----------------------------
+# EDA tools
+# ----------------------------
+
+@mcp.tool(title="Read EDA backend status", annotations=READ_ONLY)
+def eda_info() -> dict:
+    """Report EDA permissions and detected KiCad/Altium backends."""
+    return eda.info()
+
+
+@mcp.tool(title="Inspect an EDA project", annotations=READ_ONLY)
+def eda_project_inspect(path: str) -> dict:
+    """Inspect KiCad/Altium project files below one allowed project directory."""
+    return eda.project_inspect(path)
+
+
+@mcp.tool(title="Run KiCad ERC", annotations=WRITE_ADDITIVE)
+def eda_kicad_erc(schematic_path: str, report_path: str | None = None) -> dict:
+    """Run KiCad electrical-rules checking and write a report inside an allowed EDA root."""
+    return eda.kicad_erc(schematic_path, report_path=report_path)
+
+
+@mcp.tool(title="Run KiCad DRC", annotations=WRITE_ADDITIVE)
+def eda_kicad_drc(pcb_path: str, report_path: str | None = None) -> dict:
+    """Run KiCad design-rules checking and write a report inside an allowed EDA root."""
+    return eda.kicad_drc(pcb_path, report_path=report_path)
+
+
+@mcp.tool(title="Export KiCad Gerbers", annotations=WRITE_ADDITIVE)
+def eda_kicad_export_gerbers(pcb_path: str, output_dir: str) -> dict:
+    """Export fabrication Gerbers into an empty output directory.
+
+    This is fail-closed unless eda.allow_manufacturing is explicitly enabled.
+    """
+    return eda.kicad_export_gerbers(pcb_path, output_dir)
+
+
+# ----------------------------
+# Batch/workflow tool
+# ----------------------------
+
+_BATCH_TOOL_NAMES = (
+    "filesystem_list_roots",
+    "filesystem_list",
+    "filesystem_read_text",
+    "filesystem_stat",
+    "filesystem_search",
+    "filesystem_create_directory",
+    "filesystem_write_text",
+    "filesystem_replace_in_file",
+    "filesystem_move",
+    "filesystem_delete",
+    "system_info",
+    "system_resource_snapshot",
+    "process_list",
+    "process_details",
+    "process_start",
+    "process_stop",
+    "powershell_info",
+    "powershell_run",
+    "screen_info",
+    "window_list",
+    "window_active",
+    "window_details",
+    "window_focus",
+    "window_set_state",
+    "window_close",
+    "mouse_position",
+    "mouse_move",
+    "mouse_click",
+    "mouse_scroll",
+    "keyboard_write",
+    "keyboard_press",
+    "keyboard_hotkey",
+    "text_replace_all",
+    "uia_list",
+    "uia_find",
+    "uia_details",
+    "uia_focus",
+    "uia_invoke",
+    "uia_set_value",
+    "uia_toggle",
+    "uia_select",
+    "uia_expand_collapse",
+    "uia_scroll",
+    "uia_scroll_into_view",
+    "uia_set_range_value",
+    "uia_text_select_all",
+    "uia_window_action",
+    "dom_list_tabs",
+    "dom_open_tab",
+    "dom_navigate",
+    "dom_close_tab",
+    "dom_find",
+    "dom_details",
+    "dom_read_text",
+    "dom_click",
+    "dom_set_value",
+    "dom_select",
+    "dom_toggle",
+    "dom_scroll_into_view",
+    "dom_scroll",
+    "dom_wait",
+    "clipboard_read_text",
+    "clipboard_write_text",
+    "eda_info",
+    "eda_project_inspect",
+    "eda_kicad_erc",
+    "eda_kicad_drc",
+    "eda_kicad_export_gerbers",
+)
+_BATCH_TOOL_HANDLERS = {name: globals()[name] for name in _BATCH_TOOL_NAMES}
+
+_BATCH_READ_ONLY_TOOL_NAMES = frozenset(
+    {
+        "filesystem_list_roots",
+        "filesystem_list",
+        "filesystem_read_text",
+        "filesystem_stat",
+        "filesystem_search",
+        "system_info",
+        "system_resource_snapshot",
+        "process_list",
+        "process_details",
+        "powershell_info",
+        "screen_info",
+        "window_list",
+        "window_active",
+        "window_details",
+        "mouse_position",
+        "uia_list",
+        "uia_find",
+        "uia_details",
+        "dom_list_tabs",
+        "dom_find",
+        "dom_details",
+        "dom_read_text",
+        "dom_wait",
+        "clipboard_read_text",
+        "eda_info",
+        "eda_project_inspect",
+    }
+)
+
+
+def _batch_contains_reference(value) -> bool:
+    if isinstance(value, dict):
+        if set(value) == {"$ref"}:
+            return True
+        return any(_batch_contains_reference(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_batch_contains_reference(item) for item in value)
+    return False
+
+
+@mcp.tool(title="Execute a read-only actuator batch", annotations=READ_ONLY)
+async def batch_readonly(actions: list[dict]) -> dict:
+    """Execute read-only actuator actions in one MCP round trip.
+
+    Thread-safe read-only tools run concurrently. Read-only tools backed by
+    window/UIA/DOM providers are automatically serialized so they do not make
+    the entire batch fail merely because they are unsafe for parallel threads.
+    Runtime failures stay isolated per action because stop_on_error is disabled.
+    This remains the direct local path; use ChatGPT-Orchestrator only when delegation,
+    independent review/rework, or recovery materially benefits the task.
+    Write/destructive tools and $ref dependencies remain rejected fail-closed.
+    """
+    tool_names = [
+        str(action.get("tool", "")).strip()
+        for action in actions
+        if isinstance(action, dict)
+    ]
+    disallowed = sorted({name for name in tool_names if name not in _BATCH_READ_ONLY_TOOL_NAMES})
+    if disallowed:
+        runtime.audit.record(
+            "batch_readonly_rejected",
+            requested=len(actions) if isinstance(actions, list) else None,
+            tools=tool_names,
+            error_type="PermissionError",
+            error="read-only batch rejected non-read-only tools: " + ", ".join(disallowed),
+        )
+        raise PermissionError(
+            "batch_readonly accepts only read-only tools; not allowed: " + ", ".join(disallowed)
+        )
+
+    if _batch_contains_reference(actions):
+        raise ValueError("$ref dependencies are not supported by batch_readonly.")
+
+    execution_mode = (
+        "parallel_readonly"
+        if all(name in PARALLEL_READ_ONLY_TOOLS for name in tool_names)
+        else "sequential"
+    )
+    try:
+        result = await execute_batch(
+            actions,
+            _BATCH_TOOL_HANDLERS,
+            stop_on_error=False,
+            mode=execution_mode,
+        )
+    except Exception as exc:
+        runtime.audit.record(
+            "batch_readonly_rejected",
+            requested=len(actions) if isinstance(actions, list) else None,
+            tools=tool_names,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
+
+    result["read_only"] = True
+    result["serialized"] = execution_mode == "sequential"
+    runtime.audit.record(
+        "batch_readonly",
+        requested=result["requested"],
+        completed=result["completed"],
+        succeeded=result["succeeded"],
+        failed=result["failed"],
+        duration_ms=result["duration_ms"],
+        tools=tool_names,
+        execution_mode=execution_mode,
+    )
+    return result
+
+@mcp.tool(title="Execute a local actuator batch/workflow", annotations=WRITE_DESTRUCTIVE)
+async def batch_execute(
+    actions: list[dict],
+    stop_on_error: bool = True,
+    mode: str = "sequential",
+) -> dict:
+    """Execute up to 25 actuator actions in one MCP round trip.
+
+    sequential supports dependencies with {"$ref": "0.result.path"}.
+    parallel_readonly runs only a conservative read-only allowlist.
+    Each underlying tool keeps its existing permission, guard,
+    verification, and audit behavior. MAIN should prefer this for direct local
+    workflows; use ChatGPT-Orchestrator when independent workers, review/rework,
+    parallel reasoning, or recovery are materially useful.
+    """
+    tool_names = [
+        str(action.get("tool", ""))
+        for action in actions
+        if isinstance(action, dict)
+    ]
+    try:
+        result = await execute_batch(
+            actions,
+            _BATCH_TOOL_HANDLERS,
+            stop_on_error=stop_on_error,
+            mode=mode,
+        )
+    except Exception as exc:
+        runtime.audit.record(
+            "batch_execute_rejected",
+            mode=str(mode),
+            requested=len(actions) if isinstance(actions, list) else None,
+            tools=tool_names,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
+
+    runtime.audit.record(
+        "batch_execute",
+        mode=result["mode"],
+        requested=result["requested"],
+        completed=result["completed"],
+        succeeded=result["succeeded"],
+        failed=result["failed"],
+        stopped_early=result["stopped_early"],
+        duration_ms=result["duration_ms"],
+        tools=tool_names,
+    )
+    return result
+
 def main() -> None:
-    admin = AdminServer(runtime)
+    dom_host.start()
+    admin = AdminServer(runtime, dom_host=dom_host)
     admin.start()
     try:
         mcp.run()
     finally:
         admin.stop()
+        dom_host.stop()
 
 
 if __name__ == "__main__":

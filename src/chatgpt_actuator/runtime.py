@@ -28,6 +28,8 @@ class RuntimeBundle:
     clipboard: object
     verified_input: object
     uia: object
+    dom: object
+    eda: object
 
 
 class DynamicServiceProxy:
@@ -53,6 +55,8 @@ class RuntimeManager:
         "clipboard",
         "verified_input",
         "ui_automation",
+        "browser_dom",
+        "eda",
     }
 
     def __init__(self, config_path: str | Path | None = None) -> None:
@@ -66,7 +70,9 @@ class RuntimeManager:
     @staticmethod
     def _build_bundle(config: AppConfig) -> RuntimeBundle:
         from .tools import (
+            BrowserDOMService,
             ClipboardService,
+            EDAService,
             FileSystemService,
             KeyboardService,
             MouseService,
@@ -92,6 +98,8 @@ class RuntimeManager:
             clipboard=ClipboardService(config.clipboard, audit),
             verified_input=VerifiedInputService(config.verified_input, audit),
             uia=UIAutomationService(config.ui_automation, audit),
+            dom=BrowserDOMService(config.browser_dom, audit),
+            eda=EDAService(config.eda, audit),
         )
 
     @property
@@ -258,6 +266,26 @@ class RuntimeManager:
                     "verify_keyboard_write": cfg.verified_input.verify_keyboard_write,
                     "repair_full_selection_failure": cfg.verified_input.repair_full_selection_failure,
                     "rollback_partial_failure": cfg.verified_input.rollback_partial_failure,
+                },
+                "browser_dom": {
+                    "enabled": cfg.browser_dom.enabled,
+                    "allow_read": cfg.browser_dom.allow_read,
+                    "allow_click": cfg.browser_dom.allow_click,
+                    "allow_set_value": cfg.browser_dom.allow_set_value,
+                    "allow_select": cfg.browser_dom.allow_select,
+                    "allow_toggle": cfg.browser_dom.allow_toggle,
+                    "allow_scroll": cfg.browser_dom.allow_scroll,
+                    "allow_navigation": cfg.browser_dom.allow_navigation,
+                    "cdp_url": cfg.browser_dom.cdp_url,
+                    "user_data_dir": cfg.browser_dom.user_data_dir,
+                    "allowed_hosts": list(cfg.browser_dom.allowed_hosts),
+                },
+                "eda": {
+                    "enabled": cfg.eda.enabled,
+                    "allow_read": cfg.eda.allow_read,
+                    "allow_edit": cfg.eda.allow_edit,
+                    "allow_manufacturing": cfg.eda.allow_manufacturing,
+                    "allowed_project_roots": list(cfg.eda.allowed_project_roots),
                 },
                 "ui_automation": {
                     "enabled": cfg.ui_automation.enabled,

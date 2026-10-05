@@ -1,16 +1,16 @@
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-# ChatGPT-Actuator 1.0.0
+# ChatGPT-Actuator 1.1.0
 
 ChatGPT-Actuator là một Windows MCP actuator có lớp phân quyền, cho phép ChatGPT thao tác với Windows thông qua các capability được kiểm soát rõ ràng.
 
-Phiên bản 1.0.0 là bản stable đầu tiên của kiến trúc Windows control-plane hiện tại.
+Phiên bản 1.1.0 là baseline stable hiện tại của kiến trúc Windows control-plane.
 
 ## Kiến trúc chạy
 
 - Actuator chạy trên Windows desktop
 - MCP qua stdio phía sau OpenAI Secure MCP Tunnel
-- 50 MCP tools ở trạng thái phát triển local hiện tại (bản phát hành v1.0.0 có 45 tool)
+- 73 MCP tools trong baseline v1.1.0 hiện tại (bản phát hành v1.0.0 có 45 tool)
 - Admin UI cục bộ tại `http://127.0.0.1:8765/`
 - tunnel profile: `chatgpt-actuator`
 - health endpoint mặc định: `http://127.0.0.1:8081/healthz`
@@ -28,6 +28,8 @@ Phiên bản 1.0.0 là bản stable đầu tiên của kiến trúc Windows cont
 - Clipboard
 - Nhập văn bản có xác minh
 - Windows UI Automation
+- Browser DOM qua Playwright + CDP chỉ trên loopback
+- EDA inspection cùng KiCad ERC/DRC và Gerber export có guard
 
 ## Mô hình bảo mật
 
@@ -43,15 +45,18 @@ Các lớp bảo vệ chính gồm:
 - giới hạn working root của PowerShell
 - xác minh đúng cửa sổ đích trước khi gửi phím
 - UI Automation semantic action gắn element reference với đúng cửa sổ
+- Browser DOM có allowlist theo host và CDP endpoint chỉ cho loopback
 - không đọc/ghi generic value trên password controls
 - audit log không ghi plaintext nội dung bàn phím/clipboard nhạy cảm
 - Admin UI chỉ bind loopback và dùng token ngẫu nhiên theo process
 
 Nếu tab Admin cũ bị stale sau khi process restart, trang có thể tự reload và khôi phục các lựa chọn quyền chưa lưu để bạn kiểm tra lại.
 
-### Cập nhật UIA background-first local (chưa phát hành)
+### Cập nhật v1.1.0: UIA background-first, Browser DOM, routing và EDA
 
 Source local hiện tại bổ sung năm semantic action: uia_scroll, uia_scroll_into_view, uia_set_range_value, uia_text_select_all và uia_window_action. Các UIA mutation tool hiện mặc định auto_focus_window=false, ưu tiên thao tác nền qua UI Automation. Những UIA action này không giả lập chuột hoặc bàn phím vật lý. Nhóm mouse/keyboard vẫn được giữ lại như fallback cần được gọi rõ ràng.
+
+Baseline v1.1.0 có 14 browser DOM tool dùng Playwright attach vào Microsoft Edge qua CDP: dom_list_tabs, dom_find, dom_details, dom_read_text, dom_click, dom_set_value, dom_select, dom_toggle, dom_scroll_into_view, dom_scroll, dom_wait, dom_open_tab, dom_navigate và dom_close_tab. CDP hỗ trợ tự phát hiện qua file DevToolsActivePort cục bộ của Edge (khi bật remote debugging ở edge://inspect) hoặc dùng endpoint loopback chỉ định; quyền DOM tiếp tục bị giới hạn bằng allowed-host list. Các DOM action không dùng chuột hoặc bàn phím vật lý của Windows.
 
 ## Cài đặt
 
@@ -151,6 +156,8 @@ Khi giải nén một package mới:
 - mouse, keyboard và clipboard bị tắt
 - verified input bị tắt
 - cho phép UI Automation discovery nhưng tắt semantic actions
+- Browser DOM có mặt nhưng release artifact mặc định tắt quyền đọc/mutation/navigation, tắt auto-launch và để allowed hosts rỗng
+- EDA chỉ cho phép inspection read-only trong root của project; edit/manufacturing bị tắt và đường dẫn công cụ ngoài được để trống
 - Admin UI chỉ chạy trên loopback
 
 Sau đó bạn có thể chủ động bật từng quyền cần thiết trong Admin UI.
@@ -168,12 +175,12 @@ Verifier kiểm tra:
 1. cú pháp PowerShell
 2. compile Python
 3. tính nhất quán dependency với pip
-4. toàn bộ 41 regression tests với `ResourceWarning` được coi là lỗi
+4. toàn bộ 104 regression tests với `ResourceWarning` được coi là lỗi
 5. smoke test MCP/Admin runtime độc lập
 6. khả năng build ZIP và wheel reproducible
 7. build artifact release cuối
 
-Số MCP tool kỳ vọng ở trạng thái phát triển local hiện tại: **50**.
+Số MCP tool kỳ vọng trong baseline v1.1.0 hiện tại: **73**.
 
 Trước khi phát hành v1.0.0, release candidate cũng đã vượt qua test end-to-end thực tế theo đường ChatGPT → Secure MCP Tunnel → ChatGPT-Actuator → Windows, gồm chọn tab bằng UI Automation, verified text replacement/read-back, xử lý dialog và autostart sau reboot.
 

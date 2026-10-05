@@ -20,3 +20,8 @@ v*-ui-state.json
 *.dpapi
 .env
 .env.*
+
+# Local patch/backup files
+.backup*/
+*.bak
+.patch_*.py

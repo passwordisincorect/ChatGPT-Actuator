@@ -1,7 +1,7 @@
 {
   "server": {
     "name": "ChatGPT-Actuator",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "filesystem": {
     "enabled": true,
@@ -97,15 +97,54 @@
     "allow_toggle": false,
     "allow_select": false,
     "allow_expand_collapse": false,
+    "max_depth": 10,
+    "max_items": 500,
+    "max_value_chars": 1000000,
+    "verify_wait_ms": 500,
     "allow_scroll": false,
     "allow_scroll_into_view": false,
     "allow_range_value": false,
     "allow_text_selection": false,
-    "allow_window_action": false,
-    "max_depth": 10,
-    "max_items": 500,
-    "max_value_chars": 1000000,
-    "verify_wait_ms": 500
+    "allow_window_action": false
+  },
+  "browser_dom": {
+    "enabled": true,
+    "allow_read": false,
+    "allow_click": false,
+    "allow_set_value": false,
+    "allow_select": false,
+    "allow_toggle": false,
+    "allow_scroll": false,
+    "cdp_url": "auto",
+    "allowed_hosts": [],
+    "max_items": 100,
+    "max_text_chars": 1000000,
+    "default_timeout_ms": 5000,
+    "max_timeout_ms": 30000,
+    "max_scroll_pixels": 10000,
+    "user_data_dir": "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data",
+    "allow_navigation": false,
+    "edge_executable": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "launch_if_missing": false,
+    "background_mode": "minimized",
+    "background_safe_events": true,
+    "auto_allow_remote_debugging": false,
+    "focus_guard_enabled": true,
+    "visibility_guard_enabled": true
+  },
+  "eda": {
+    "enabled": true,
+    "allow_read": true,
+    "allow_edit": false,
+    "allow_manufacturing": false,
+    "allowed_project_roots": [
+      "__CHATGPT_ACTUATOR_ROOT__"
+    ],
+    "kicad_cli": "",
+    "altium_executable": "",
+    "default_timeout_seconds": 30,
+    "max_timeout_seconds": 120,
+    "max_output_bytes": 1048576
   },
   "admin": {
     "enabled": true,

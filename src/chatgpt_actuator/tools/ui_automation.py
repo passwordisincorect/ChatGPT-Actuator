@@ -6,6 +6,8 @@ import time
 from contextlib import contextmanager
 
 import pythoncom
+import win32con
+import win32gui
 from pywinauto import Desktop
 
 from ..audit import AuditLogger
@@ -51,7 +53,7 @@ class UIAutomationService:
             items = []
             scanned = 0
             truncated = False
-            for depth, element in self._walk(root, depth_limit):
+            for depth, element in self._walk(root, depth_limit, target_hwnd=int(target_hwnd)):
                 scanned += 1
                 info = element.element_info
                 if not include_hidden and not bool(getattr(info, "visible", True)):
@@ -113,7 +115,7 @@ class UIAutomationService:
             root = self._window(int(target_hwnd))
             matches = []
             scanned = 0
-            for depth, element in self._walk(root, depth_limit):
+            for depth, element in self._walk(root, depth_limit, target_hwnd=int(target_hwnd)):
                 scanned += 1
                 if self._matches(
                     element,
@@ -661,10 +663,16 @@ class UIAutomationService:
     def _window(self, target_hwnd: int):
         return Desktop(backend="uia").window(handle=int(target_hwnd)).wrapper_object()
 
-    def _walk(self, root, max_depth: int):
+    def _walk(self, root, max_depth: int, target_hwnd: int | None = None):
         queue = [(0, root)]
         while queue:
             depth, element = queue.pop(0)
+            if (
+                target_hwnd is not None
+                and depth > 0
+                and not self._belongs_to_target_window(int(target_hwnd), element)
+            ):
+                continue
             yield depth, element
             if depth >= max_depth:
                 continue
@@ -674,6 +682,41 @@ class UIAutomationService:
                 children = []
             for child in children:
                 queue.append((depth + 1, child))
+
+    def _belongs_to_target_window(self, target_hwnd: int, element) -> bool:
+        """Reject UIA nodes that Chromium providers leak from another top-level HWND.
+
+        Native UIA handles are not available for every semantic node. Chromium RuntimeId
+        values commonly carry a child HWND in slot 1, so that value is used only when
+        Windows confirms it is a real HWND. Unknown/non-HWND identifiers are left alone.
+        """
+        candidates: list[int] = []
+        try:
+            handle = self._optional_int(getattr(element.element_info, "handle", None))
+            if handle:
+                candidates.append(handle)
+        except Exception:
+            pass
+
+        try:
+            runtime_id = self._runtime_id(element)
+            if len(runtime_id) > 1:
+                candidate = int(runtime_id[1])
+                if candidate > 0 and candidate not in candidates:
+                    candidates.append(candidate)
+        except Exception:
+            pass
+
+        for candidate in candidates:
+            try:
+                if not win32gui.IsWindow(candidate):
+                    continue
+                owner_root = int(win32gui.GetAncestor(candidate, win32con.GA_ROOT) or 0)
+                if owner_root and owner_root != int(target_hwnd):
+                    return False
+            except Exception:
+                continue
+        return True
 
     def _matches(
         self,
@@ -766,7 +809,7 @@ class UIAutomationService:
             )
 
         root = self._window(int(target_hwnd))
-        for _depth, element in self._walk(root, self.config.max_depth):
+        for _depth, element in self._walk(root, self.config.max_depth, target_hwnd=int(target_hwnd)):
             if self._runtime_id(element) == runtime_id:
                 return element
         raise LookupError(

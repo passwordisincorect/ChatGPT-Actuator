@@ -4,8 +4,11 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .errors import ConfigError
+
+PLACEHOLDER_ROOT = "__CHATGPT_ACTUATOR_ROOT__"
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,47 @@ class UIAutomationConfig:
 
 
 @dataclass(frozen=True)
+class BrowserDOMConfig:
+    enabled: bool
+    allow_read: bool
+    allow_click: bool
+    allow_set_value: bool
+    allow_select: bool
+    allow_toggle: bool
+    allow_scroll: bool
+    allow_navigation: bool
+    cdp_url: str
+    user_data_dir: str
+    allowed_hosts: tuple[str, ...]
+    max_items: int
+    max_text_chars: int
+    default_timeout_ms: int
+    max_timeout_ms: int
+    max_scroll_pixels: int
+    edge_executable: str = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+    launch_if_missing: bool = False
+    auto_allow_remote_debugging: bool = False
+    focus_guard_enabled: bool = False
+    visibility_guard_enabled: bool = False
+    background_mode: str = "offscreen"
+    background_safe_events: bool = False
+
+
+@dataclass(frozen=True)
+class EDAConfig:
+    enabled: bool
+    allow_read: bool
+    allow_edit: bool
+    allow_manufacturing: bool
+    allowed_project_roots: tuple[str, ...]
+    kicad_cli: str
+    altium_executable: str
+    default_timeout_seconds: float
+    max_timeout_seconds: float
+    max_output_bytes: int
+
+
+@dataclass(frozen=True)
 class AdminConfig:
     enabled: bool
     host: str
@@ -154,6 +198,8 @@ class AppConfig:
     clipboard: ClipboardConfig
     verified_input: VerifiedInputConfig
     ui_automation: UIAutomationConfig
+    browser_dom: BrowserDOMConfig
+    eda: EDAConfig
     admin: AdminConfig
     logging_enabled: bool
     log_file: str
@@ -161,6 +207,11 @@ class AppConfig:
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _expand_project_root(value: object) -> str:
+    text = str(value).strip()
+    return str(project_root()) if text == PLACEHOLDER_ROOT else str(value)
 
 
 def default_config_path() -> Path:
@@ -194,8 +245,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         clipboard_cfg = raw.get("clipboard", {})
         verified_input_cfg = raw.get("verified_input", {})
         ui_automation_cfg = raw.get("ui_automation", {})
+        browser_dom_cfg = raw.get("browser_dom", {})
+        eda_cfg = raw.get("eda", {})
         admin_cfg = raw.get("admin", {})
-        allowed_roots = tuple(str(x) for x in fs["allowed_roots"])
+        allowed_roots = tuple(_expand_project_root(x) for x in fs["allowed_roots"])
     except (KeyError, TypeError) as exc:
         raise ConfigError("Configuration is missing required fields.") from exc
 
@@ -203,17 +256,62 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         raise ConfigError("filesystem.allowed_roots must contain at least one path.")
 
     ps_working_roots = tuple(
-        str(x) for x in powershell_cfg.get("allowed_working_roots", allowed_roots)
+        _expand_project_root(x) for x in powershell_cfg.get("allowed_working_roots", allowed_roots)
     )
     if not ps_working_roots:
         raise ConfigError("powershell.allowed_working_roots must contain at least one path.")
 
-    default_cwd = str(
+    default_cwd = _expand_project_root(
         powershell_cfg.get(
             "default_cwd",
             ps_working_roots[0],
         )
     )
+
+    cdp_url = str(browser_dom_cfg.get("cdp_url", "auto")).strip()
+    if cdp_url.casefold() != "auto":
+        parsed_cdp = urlparse(cdp_url)
+        if parsed_cdp.scheme not in {"http", "https"} or parsed_cdp.hostname not in {"127.0.0.1", "localhost"}:
+            raise ConfigError("browser_dom.cdp_url must be 'auto' or an http(s) loopback URL using 127.0.0.1 or localhost.")
+        if parsed_cdp.port is not None and not 1 <= parsed_cdp.port <= 65535:
+            raise ConfigError("browser_dom.cdp_url port must be between 1 and 65535.")
+    user_data_dir = os.path.expandvars(
+        str(browser_dom_cfg.get("user_data_dir", r"%LOCALAPPDATA%\Microsoft\Edge\User Data")).strip()
+    )
+    if not user_data_dir:
+        raise ConfigError("browser_dom.user_data_dir must not be empty.")
+    edge_executable = os.path.expandvars(
+        str(browser_dom_cfg.get(
+            "edge_executable",
+            r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        )).strip()
+    )
+    if not edge_executable:
+        raise ConfigError("browser_dom.edge_executable must not be empty.")
+    background_mode = str(browser_dom_cfg.get("background_mode", "offscreen")).strip().casefold()
+    if background_mode not in {"offscreen", "minimized"}:
+        raise ConfigError("browser_dom.background_mode must be 'offscreen' or 'minimized'.")
+    background_safe_events = bool(browser_dom_cfg.get("background_safe_events", False))
+    allowed_hosts = tuple(
+        str(x).strip().casefold()
+        for x in browser_dom_cfg.get("allowed_hosts", [])
+        if str(x).strip()
+    )
+
+    eda_roots = tuple(
+        _expand_project_root(x) for x in eda_cfg.get("allowed_project_roots", allowed_roots)
+    )
+    if not eda_roots:
+        raise ConfigError("eda.allowed_project_roots must contain at least one path.")
+    eda_default_timeout = float(eda_cfg.get("default_timeout_seconds", 30.0))
+    eda_max_timeout = float(eda_cfg.get("max_timeout_seconds", 120.0))
+    if eda_default_timeout <= 0 or eda_max_timeout <= 0:
+        raise ConfigError("EDA timeout values must be positive.")
+    if eda_default_timeout > eda_max_timeout:
+        raise ConfigError("eda.default_timeout_seconds cannot exceed eda.max_timeout_seconds.")
+    eda_max_output_bytes = int(eda_cfg.get("max_output_bytes", 1048576))
+    if eda_max_output_bytes < 1024:
+        raise ConfigError("eda.max_output_bytes must be at least 1024.")
 
     admin_host = str(admin_cfg.get("host", "127.0.0.1")).strip()
     if admin_host not in {"127.0.0.1", "localhost"}:
@@ -329,6 +427,49 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             max_items=int(ui_automation_cfg.get("max_items", 500)),
             max_value_chars=int(ui_automation_cfg.get("max_value_chars", 1000000)),
             verify_wait_ms=int(ui_automation_cfg.get("verify_wait_ms", 500)),
+        ),
+        browser_dom=BrowserDOMConfig(
+            enabled=bool(browser_dom_cfg.get("enabled", False)),
+            allow_read=bool(browser_dom_cfg.get("allow_read", False)),
+            allow_click=bool(browser_dom_cfg.get("allow_click", False)),
+            allow_set_value=bool(browser_dom_cfg.get("allow_set_value", False)),
+            allow_select=bool(browser_dom_cfg.get("allow_select", False)),
+            allow_toggle=bool(browser_dom_cfg.get("allow_toggle", False)),
+            allow_scroll=bool(browser_dom_cfg.get("allow_scroll", False)),
+            allow_navigation=bool(browser_dom_cfg.get("allow_navigation", False)),
+            cdp_url=cdp_url,
+            user_data_dir=user_data_dir,
+            edge_executable=edge_executable,
+            launch_if_missing=bool(browser_dom_cfg.get("launch_if_missing", False)),
+            auto_allow_remote_debugging=bool(
+                browser_dom_cfg.get("auto_allow_remote_debugging", False)
+            ),
+            focus_guard_enabled=bool(
+                browser_dom_cfg.get("focus_guard_enabled", False)
+            ),
+            visibility_guard_enabled=bool(
+                browser_dom_cfg.get("visibility_guard_enabled", False)
+            ),
+            background_mode=background_mode,
+            background_safe_events=background_safe_events,
+            allowed_hosts=allowed_hosts,
+            max_items=int(browser_dom_cfg.get("max_items", 100)),
+            max_text_chars=int(browser_dom_cfg.get("max_text_chars", 1000000)),
+            default_timeout_ms=int(browser_dom_cfg.get("default_timeout_ms", 5000)),
+            max_timeout_ms=int(browser_dom_cfg.get("max_timeout_ms", 30000)),
+            max_scroll_pixels=int(browser_dom_cfg.get("max_scroll_pixels", 10000)),
+        ),
+        eda=EDAConfig(
+            enabled=bool(eda_cfg.get("enabled", False)),
+            allow_read=bool(eda_cfg.get("allow_read", True)),
+            allow_edit=bool(eda_cfg.get("allow_edit", False)),
+            allow_manufacturing=bool(eda_cfg.get("allow_manufacturing", False)),
+            allowed_project_roots=eda_roots,
+            kicad_cli=os.path.expandvars(str(eda_cfg.get("kicad_cli", "")).strip()),
+            altium_executable=os.path.expandvars(str(eda_cfg.get("altium_executable", "")).strip()),
+            default_timeout_seconds=eda_default_timeout,
+            max_timeout_seconds=eda_max_timeout,
+            max_output_bytes=eda_max_output_bytes,
         ),
         admin=AdminConfig(
             enabled=bool(admin_cfg.get("enabled", True)),

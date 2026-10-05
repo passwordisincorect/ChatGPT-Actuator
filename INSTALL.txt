@@ -1,4 +1,4 @@
-ChatGPT-Actuator 1.0.0 bootstrap release package.
+ChatGPT-Actuator 1.1.0 bootstrap release package.
 
 Safe defaults:
 - filesystem read-only, limited to the extracted project folder after setup

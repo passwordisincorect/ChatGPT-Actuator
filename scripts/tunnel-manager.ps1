@@ -119,18 +119,22 @@ function Stop-Tunnel {
 
     foreach ($Proc in $Processes) {
         $PidValue = [int]$Proc.ProcessId
-        Write-Host "Stopping tunnel-client PID $PidValue..."
-        Stop-Process -Id $PidValue -ErrorAction SilentlyContinue
+        Write-Host "Stopping tunnel-client process tree PID $PidValue..."
+        # The MCP stdio server is a child of tunnel-client. Killing only the
+        # tunnel process can orphan python.exe and leave the Admin port bound.
+        & taskkill.exe /PID $PidValue /T /F 2>$null | Out-Null
     }
 
     $Deadline = (Get-Date).AddSeconds(5)
     do {
         Start-Sleep -Milliseconds 250
-        if (@(Get-TunnelProcesses).Count -eq 0) { Write-Host "Tunnel stopped."; return }
+        if (@(Get-TunnelProcesses).Count -eq 0) { Write-Host "Tunnel process tree stopped."; return }
     } while ((Get-Date) -lt $Deadline)
 
-    foreach ($Proc in @(Get-TunnelProcesses)) { Stop-Process -Id ([int]$Proc.ProcessId) -Force -ErrorAction SilentlyContinue }
-    Write-Host "Tunnel stop was forced after timeout."
+    foreach ($Proc in @(Get-TunnelProcesses)) {
+        & taskkill.exe /PID ([int]$Proc.ProcessId) /T /F 2>$null | Out-Null
+    }
+    Write-Host "Tunnel process tree stop was forced after timeout."
 }
 
 switch ($Action) {
