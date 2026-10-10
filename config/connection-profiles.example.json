@@ -1,0 +1,19 @@
+{
+  "profiles": {
+    "openai": {
+      "transport": "openai_tunnel",
+      "tunnel_profile": "chatgpt-actuator"
+    },
+    "tailscale": {
+      "transport": "tailscale_funnel",
+      "issuer": "https://YOUR-TAILNET-NAME.ts.net",
+      "public_port": 8188,
+      "owner_port": 8189,
+      "actuator_backend": "http://127.0.0.1:8090/mcp",
+      "orchestrator_backend": "http://127.0.0.1:8092/mcp",
+      "state_dir": "deployment/tailscale-gateway",
+      "per_call_approval": true,
+      "direct_local_approval": false
+    }
+  }
+}

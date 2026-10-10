@@ -191,3 +191,25 @@ Dự án được phát hành theo [MIT License](LICENSE).
 ## Đóng góp và an toàn
 
 Nên giữ quyền điều khiển Windows ở mức hạn chế mặc định. Không commit credential cục bộ, file DPAPI, log, deployment state hoặc tunnel secret vào repository.
+
+
+## Profile kết nối và gateway Tailscale tùy chọn
+
+Cùng một mã công cụ trong src/chatgpt_actuator phục vụ OpenAI Secure MCP Tunnel và Tailscale Funnel. Gateway OAuth tùy chọn nằm trong integrations/tailscale_gateway; không sao chép các công cụ hoặc thay đổi cấu hình OpenAI Tunnel hiện tại.
+
+| Phương thức | Điểm kết nối ChatGPT | Thành phần cục bộ |
+| --- | --- | --- |
+| openai_tunnel | OpenAI Secure MCP Tunnel | Profile stdio hiện có |
+| tailscale_funnel | https://HOST/full/mcp | Actuator HTTP 127.0.0.1:8090, gateway OAuth 127.0.0.1:8188, trang duyệt 127.0.0.1:8189 |
+
+Cài trên máy Windows khác:
+
+1. Chạy scripts/install.ps1 và cài phụ thuộc tùy chọn: .\.venv\Scripts\python.exe -m pip install -e ".[tailscale]"
+2. Sao chép config/connection-profiles.example.json thành config/connection-profiles.local.json. Thay issuer bằng hostname HTTPS do Tailscale Funnel cung cấp. Giữ backend và trang duyệt trên loopback. Các profile gateway chạy đồng thời cần cổng và thư mục trạng thái riêng.
+3. Ở một cửa sổ PowerShell, chạy .\scripts\start-actuator-http.ps1 -Profile tailscale. Actuator hiện có sẽ chạy ở chế độ HTTP trên cổng 8090. Nếu đã có một Actuator HTTP trên cổng đó, dùng tiến trình đang chạy hoặc dừng nó trước.
+4. Ở cửa sổ khác, chạy .\scripts\gateway-profile.ps1 -Action Validate -Profile tailscale, sau đó .\scripts\gateway-profile.ps1 -Action Run -Profile tailscale. Kiểm tra bằng -Action Status. Duyệt OAuth tại http://127.0.0.1:8189/ trên máy Windows.
+5. Chủ động công bố gateway bằng .\scripts\gateway-profile.ps1 -Action EnableFunnel -Profile tailscale. Kết nối ChatGPT với tài nguyên /full/mcp và các scope mcp:read mcp:write mcp:execute. Chỉ cổng 8188 được công bố.
+
+Profile OpenAI hiện có chạy bằng .\scripts\gateway-profile.ps1 -Action Run -Profile openai; lệnh này gọi tunnel-manager.ps1 sau khi bạn đã thiết lập OpenAI Tunnel.
+
+OAuth luôn cần chủ máy duyệt kết nối. Profile mẫu còn yêu cầu duyệt cục bộ từng lời gọi không thuộc nhóm đọc. Sau khi đánh giá, bạn có thể đặt per_call_approval thành false trong profile riêng. Lệnh Actuator chạy với quyền tài khoản Windows; gateway không tạo sandbox. Số lượng công cụ do backend và cấu hình quyền đang chạy quyết định. Đường dẫn /orch/mcp cần một backend Orchestrator HTTP riêng và không được các script này tự khởi động. Profile riêng và dữ liệu OAuth không được đưa vào Git.

@@ -191,3 +191,25 @@ This project is licensed under the [MIT License](LICENSE).
 ## Contribution and safety
 
 Keep Windows-control permissions conservative by default. Do not commit local credentials, DPAPI files, logs, deployment state or tunnel secrets.
+
+
+## Optional connection profiles
+
+The actuator tools in src/chatgpt_actuator serve both OpenAI Secure MCP Tunnel and Tailscale Funnel. The optional OAuth gateway is in integrations/tailscale_gateway; it does not duplicate tools or alter the existing OpenAI Tunnel setup.
+
+| Transport | ChatGPT endpoint | Local runtime |
+| --- | --- | --- |
+| openai_tunnel | OpenAI Secure MCP Tunnel | Existing stdio profile |
+| tailscale_funnel | https://HOST/full/mcp | HTTP actuator 127.0.0.1:8090, OAuth gateway 127.0.0.1:8188, owner page 127.0.0.1:8189 |
+
+To set up a different Windows PC:
+
+1. Run scripts/install.ps1 and install the optional dependencies: .\.venv\Scripts\python.exe -m pip install -e ".[tailscale]"
+2. Copy config/connection-profiles.example.json to config/connection-profiles.local.json. Set issuer to your actual HTTPS Tailscale Funnel hostname. Leave backend and owner page on loopback. Give concurrent gateway profiles separate ports and state directories.
+3. In one PowerShell terminal run .\scripts\start-actuator-http.ps1 -Profile tailscale. It starts the existing actuator in HTTP mode on port 8090. If that port is occupied, use the already running HTTP actuator or stop it first.
+4. In another terminal run .\scripts\gateway-profile.ps1 -Action Validate -Profile tailscale, then .\scripts\gateway-profile.ps1 -Action Run -Profile tailscale. Check -Action Status. Review OAuth requests at http://127.0.0.1:8189/ on that PC.
+5. Explicitly publish the gateway with .\scripts\gateway-profile.ps1 -Action EnableFunnel -Profile tailscale. Connect ChatGPT to the /full/mcp resource with scopes mcp:read mcp:write mcp:execute. Only port 8188 is published.
+
+To start an existing OpenAI tunnel profile, use .\scripts\gateway-profile.ps1 -Action Run -Profile openai, which delegates to tunnel-manager.ps1 after normal OpenAI setup. No gateway is involved in this mode.
+
+OAuth always needs local owner consent. The sample profile also requires local approval for non-read tool calls. A local profile can set per_call_approval to false after review. Actuator commands run under the Windows user account; the gateway does not sandbox them. The tool count comes from the running actuator backend and its capability settings. The optional /orch/mcp route needs a separate Orchestrator HTTP backend and is not started by these scripts. Local profile and OAuth state are excluded from Git.
