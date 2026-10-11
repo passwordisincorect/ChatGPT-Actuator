@@ -92,7 +92,7 @@ Write-Host "PASS"
 
 Write-Host "[2/7] Python compile..."
 
-& $Python -m compileall -q (Join-Path $ProjectRoot "src") (Join-Path $ProjectRoot "tests") $Builder $RuntimeVerifier
+& $Python -m compileall -q (Join-Path $ProjectRoot "src") (Join-Path $ProjectRoot "tests") (Join-Path $ProjectRoot "integrations") $Builder $RuntimeVerifier
 
 if ($LASTEXITCODE -ne 0) { throw "Python compileall failed." }
 

@@ -13,7 +13,8 @@
       "orchestrator_backend": "http://127.0.0.1:8092/mcp",
       "state_dir": "deployment/tailscale-gateway",
       "per_call_approval": true,
-      "direct_local_approval": false
+      "direct_local_approval": false,
+      "actuator_admin_port": 8766
     }
   }
 }

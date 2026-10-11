@@ -1,5 +1,6 @@
 param(
-    [switch]$RecreateVenv
+    [switch]$RecreateVenv,
+    [switch]$Tailscale
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +41,8 @@ Write-Host "Ensuring build tooling..."
 if ($LASTEXITCODE -ne 0) { throw "Failed to install build tooling." }
 
 Write-Host "Installing/updating ChatGPT-Actuator dependencies..."
-& $VenvPython -m pip install -e .
+$InstallTarget = if ($Tailscale) { ".[tailscale]" } else { "." }
+& $VenvPython -m pip install -e $InstallTarget
 if ($LASTEXITCODE -ne 0) { throw "Failed to install project dependencies." }
 
 $Version = (& $VenvPython -c "import importlib.metadata; print(importlib.metadata.version('chatgpt-actuator'))" | Select-Object -Last 1).Trim()

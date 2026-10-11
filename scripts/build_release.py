@@ -75,7 +75,7 @@ def copy_release_tree(stage: Path) -> None:
         if src.exists():
             shutil.copy2(src, scripts_stage / name)
 
-    for name in ("pyproject.toml", "README.md", "README.vi.md", "LICENSE"):
+    for name in ("pyproject.toml", "README.md", "README.vi.md", "LICENSE", "CHANGELOG.md", "RELEASE_NOTES_1.2.0.md"):
         shutil.copy2(ROOT / name, stage / name)
 
 

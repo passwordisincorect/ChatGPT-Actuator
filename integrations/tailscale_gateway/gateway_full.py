@@ -7,7 +7,8 @@ import secrets
 import time
 
 import httpx
-from gateway_config import PROFILE
+from gateway_config import load_profile
+PROFILE = load_profile()
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 SCOPES = {"mcp:read", "mcp:write", "mcp:execute"}
@@ -59,7 +60,7 @@ def rpc_error(rpc, code, message, status=200):
         "error":{"code":code,"message":message}}, status_code=status,
         headers={"Cache-Control":"no-store"})
 
-def pending_result(rpc, key):
+def pending_result(rpc, key, g):
     return JSONResponse({"jsonrpc":"2.0", "id":rpc.get("id"),
         "result":{"content":[{"type":"text", "text":
         f"Approve request {key} at http://127.0.0.1:{g.ADMIN_PORT}/full-approvals on the Windows PC, then retry the identical tool call within 120 seconds."}],
@@ -151,7 +152,7 @@ async def full_proxy(request,g):
         tok=c.execute("SELECT * FROM tokens WHERE tokenhash=? AND kind='access'",(tokenhash,)).fetchone()
         client=c.execute("SELECT 1 FROM clients WHERE client_id=?",(tok["client_id"],)).fetchone() if tok else None
     if (not tok or not client or tok["resource"]!=g.FULL_RESOURCE
-            or tok["expires"]<g.stamp() or not SCOPES.issubset(set(tok["scope"].split()))):
+            or tok["expires"]<=g.stamp() or not SCOPES.issubset(set(tok["scope"].split()))):
         return g.full_challenge()
     if request.headers.get("origin"): return Response(status_code=403)
     if request.method!="POST": return Response(status_code=405,headers={"Allow":"POST"})
@@ -195,9 +196,9 @@ async def full_proxy(request,g):
                 key=secrets.token_urlsafe(24)
                 PENDING[key]={"fingerprint":fp,"tokenhash":tokenhash,"client_id":tok["client_id"],
                     "name":name,"args":args,"expires":time.monotonic()+120,"status":"pending"}
-                return pending_result(rpc,key)
+                return pending_result(rpc,key,g)
             key,action=existing
-            if action["status"]!="approved": return pending_result(rpc,key)
+            if action["status"]!="approved": return pending_result(rpc,key,g)
             action["status"]="used"  # no await between check and consumption
             PENDING.pop(key,None)
         _,url,upstream_name=mapping[name]

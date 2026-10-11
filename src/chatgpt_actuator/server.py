@@ -8,6 +8,7 @@ from .dom_host import DOMAsyncProxy, DOMExecutionHost
 from .batch import PARALLEL_READ_ONLY_TOOLS, execute_batch
 from .routing_policy import RoutingPolicyEngine
 from .runtime import RuntimeManager
+from .transport import run_options
 
 
 runtime = RuntimeManager()
@@ -1165,11 +1166,12 @@ async def batch_execute(
     return result
 
 def main() -> None:
+    options = run_options()
     dom_host.start()
     admin = AdminServer(runtime, dom_host=dom_host)
     admin.start()
     try:
-        mcp.run()
+        mcp.run(**options)
     finally:
         admin.stop()
         dom_host.stop()

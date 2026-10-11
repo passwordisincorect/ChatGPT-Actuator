@@ -24,7 +24,8 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
-from gateway_config import PROFILE
+from gateway_config import load_profile
+PROFILE = load_profile()
 from gateway_guard import RequestGuard
 import gateway_full as full
 import owner_ui
@@ -221,6 +222,8 @@ def url_with(uri: str, fields: dict) -> str:
 
 async def authorize(request: Request):
     q = request.query_params
+    if any(len(q.getlist(k)) != 1 for k in q):
+        return response_error("invalid_request")
     client_id = q.get("client_id", "")
     redirect = q.get("redirect_uri", "")
     challenge = q.get("code_challenge", "")
@@ -325,7 +328,7 @@ async def token(request: Request):
                 return response_error("invalid_grant")
             c.execute("BEGIN IMMEDIATE")
             row = c.execute("SELECT * FROM codes WHERE codehash=?", (digest(code),)).fetchone()
-            if row is None or row["expires"] < stamp() or row["client_id"] != client_id or row["resource"] != resource or row["redirect"] != f.get("redirect_uri") or not hmac.compare_digest(pkce_s256(verifier), row["challenge"]):
+            if row is None or row["expires"] <= stamp() or row["client_id"] != client_id or row["resource"] != resource or row["redirect"] != f.get("redirect_uri") or not hmac.compare_digest(pkce_s256(verifier), row["challenge"]):
                 return response_error("invalid_grant")
             granted_scope = row["scope"]
             c.execute("DELETE FROM codes WHERE codehash=?", (digest(code),))
@@ -333,7 +336,7 @@ async def token(request: Request):
             old = f.get("refresh_token","")
             c.execute("BEGIN IMMEDIATE")
             row = c.execute("SELECT * FROM tokens WHERE tokenhash=? AND kind='refresh'", (digest(old),)).fetchone()
-            if row is None or row["expires"] < stamp() or row["client_id"] != client_id or row["resource"] != resource:
+            if row is None or row["expires"] <= stamp() or row["client_id"] != client_id or row["resource"] != resource:
                 return response_error("invalid_grant")
             granted_scope = row["scope"]
             c.execute("DELETE FROM tokens WHERE tokenhash=?", (digest(old),))
@@ -376,13 +379,15 @@ async def mcp_proxy(request: Request):
         return oauth_challenge(is_orch_route)
     with db() as c:
         tok = c.execute("SELECT * FROM tokens WHERE tokenhash=? AND kind='access'", (digest(supplied),)).fetchone()
+        client_exists = c.execute("SELECT 1 FROM clients WHERE client_id=?", (tok["client_id"],)).fetchone() if tok else None
     expected_resources = (ORCH_RESOURCE,) if is_orch_route else (RESOURCE, ISSUER)
-    if (tok is None or tok["expires"] < stamp()
+    if (tok is None or not client_exists or tok["expires"] <= stamp()
             or tok["resource"] not in expected_resources
             or not (set(tok["scope"].split()) & ({SCOPE, WRITE_SCOPE, EXECUTE_SCOPE}
                                               if is_orch_route else {SCOPE}))):
         return oauth_challenge(is_orch_route)
     if request.headers.get("origin"): return Response(status_code=403)
+    if any(k.startswith("mcp-param-") for k in request.headers): return Response(status_code=400)
     if request.method != "POST":
         return Response(status_code=405, headers={"Allow":"POST","Cache-Control":"no-store"})
     raw = await request.body()
@@ -512,7 +517,7 @@ async def mcp_proxy(request: Request):
 
 async def health(request: Request):
     return JSONResponse({"service":"oauth-mcp-gateway","ready":True,
-        "allowed_tools":sorted(ALLOWED_TOOLS)})
+        "issuer": ISSUER, "allowed_tools":sorted(ALLOWED_TOOLS)})
 
 def admin_headers_ok(req: Request) -> bool:
     host = req.headers.get("host", "")
@@ -721,7 +726,7 @@ async def run():
     srv1=uvicorn.Server(uvicorn.Config(audited_public_app, host="127.0.0.1",port=PUBLIC_PORT,
         log_level="warning", access_log=False, server_header=False,
         limit_concurrency=128, timeout_keep_alive=5))
-    srv2=uvicorn.Server(uvicorn.Config(admin_app, host="127.0.0.1",port=ADMIN_PORT,
+    srv2=uvicorn.Server(uvicorn.Config(RequestGuard(admin_app), host="127.0.0.1",port=ADMIN_PORT,
         log_level="warning", access_log=False, server_header=False))
     await asyncio.gather(srv1.serve(),srv2.serve())
 

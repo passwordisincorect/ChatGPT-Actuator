@@ -26,6 +26,9 @@ BODY_LIMITS = {
     "/full/mcp": 1024 * 1024,
     "/oauth/register": 8192,
     "/oauth/token": 8192,
+    "/decision": 4096,
+    "/full-decision": 4096,
+    "/revoke-connection": 4096,
 }
 ORCH_READONLY_TOOLS = frozenset({
     "orch_info", "orch_project_list", "orch_task_list", "orch_task_get",
@@ -98,7 +101,7 @@ class RequestGuard:
             await send({"type": "http.response.body", "body": reason})
 
         # Reject ambiguous field lines before parsing or proxying a request.
-        singleton = (b"authorization", b"mcp-protocol-version", b"mcp-method",
+        singleton = (b"host", b"authorization", b"mcp-protocol-version", b"mcp-method",
                      b"mcp-name", b"content-type", b"content-length", b"origin")
         if any(len(headers.get(key, ())) > 1 for key in singleton):
             return await reject(400, b"Duplicate security header")

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.0] - 2026-10-11
+
+- Add optional named Tailscale Funnel/OAuth profiles alongside OpenAI Tunnel.
+- Run the same Actuator tools over loopback stateless JSON HTTP; choose backend and Admin ports from the profile.
+- Add `setup.ps1 -Tailscale`, local owner consent, per-call approval and connection revocation.
+- Fix the pending approval response and reject duplicate security headers/OAuth parameters.
+- Add isolated OAuth/security tests, a real Windows HTTP gateway integration test and PR CI.
+- Package the optional gateway in the bootstrap ZIP, excluding local OAuth state and credentials.
+
+
 ## [1.1.0] - 2026-10-05
 
 ### Added
