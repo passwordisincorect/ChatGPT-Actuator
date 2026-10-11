@@ -1,10 +1,10 @@
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-# ChatGPT-Actuator 1.1.0
+# ChatGPT-Actuator 1.2.0
 
 ChatGPT-Actuator is a permission-gated Windows MCP actuator for ChatGPT.
 
-Version 1.1.0 is the current stable baseline of the Windows control-plane architecture.
+Version 1.2.0 adds an optional Tailscale Funnel connection with owner-approved OAuth, alongside the existing OpenAI Tunnel connection.
 
 ## Runtime
 
@@ -132,7 +132,7 @@ Build:
 .\scripts\build-release.ps1
 ```
 
-The generated bootstrap ZIP is not a standalone executable. It requires Windows, Python 3.12 x64, OpenAI tunnel-client, and an authorized tunnel profile.
+The generated bootstrap ZIP is not a standalone executable. It requires Windows and Python 3.12 x64. OpenAI connections need tunnel-client/profile; Tailscale connections need Tailscale and the optional gateway dependencies.
 
 The release builder:
 
@@ -175,7 +175,7 @@ The verifier checks:
 1. PowerShell syntax
 2. Python compilation
 3. pip dependency consistency
-4. full 104-test regression suite with `ResourceWarning` treated as an error
+4. full regression suite, including isolated OAuth/security and Windows HTTP gateway integration tests with `ResourceWarning` treated as an error
 5. isolated MCP/Admin runtime smoke test
 6. reproducible ZIP and wheel builds
 7. final release artifact build
@@ -191,3 +191,31 @@ This project is licensed under the [MIT License](LICENSE).
 ## Contribution and safety
 
 Keep Windows-control permissions conservative by default. Do not commit local credentials, DPAPI files, logs, deployment state or tunnel secrets.
+
+
+## Optional connection profiles
+
+The actuator tools in src/chatgpt_actuator serve both OpenAI Secure MCP Tunnel and Tailscale Funnel. The optional OAuth gateway is in integrations/tailscale_gateway; it does not duplicate tools or alter the existing OpenAI Tunnel setup.
+
+| Transport | ChatGPT endpoint | Local runtime |
+| --- | --- | --- |
+| openai_tunnel | OpenAI Secure MCP Tunnel | Existing stdio profile |
+| tailscale_funnel | https://HOST/full/mcp | HTTP actuator 127.0.0.1:8090, OAuth gateway 127.0.0.1:8188, owner page 127.0.0.1:8189, Actuator Admin 127.0.0.1:8766 |
+
+To set up a different Windows PC:
+
+1. Install Python 3.12 x64 and Tailscale, sign in to Tailscale, then run `scripts/setup.ps1 -Tailscale`. No OpenAI Tunnel client, API key or tunnel profile is required for this connection.
+2. Copy config/connection-profiles.example.json to config/connection-profiles.local.json. Set issuer to your actual HTTPS Tailscale Funnel hostname. Leave backend and owner page on loopback. Give concurrent gateway profiles separate ports and state directories.
+3. In one PowerShell terminal run .\scripts\start-actuator-http.ps1 -Profile tailscale. It starts the existing actuator in HTTP mode on port 8090. If that port is occupied, use the already running HTTP actuator or stop it first.
+4. In another terminal run .\scripts\gateway-profile.ps1 -Action Validate -Profile tailscale, then .\scripts\gateway-profile.ps1 -Action Run -Profile tailscale. Check -Action Status. Review OAuth requests at http://127.0.0.1:8189/ on that PC.
+5. Explicitly publish the gateway with .\scripts\gateway-profile.ps1 -Action EnableFunnel -Profile tailscale. Connect ChatGPT to the /full/mcp resource with scopes mcp:read mcp:write mcp:execute. Only port 8188 is published.
+
+To start an existing OpenAI tunnel profile, use .\scripts\gateway-profile.ps1 -Action Run -Profile openai, which delegates to tunnel-manager.ps1 after normal OpenAI setup. No gateway is involved in this mode.
+
+OAuth always needs local owner consent. The sample profile also requires local approval for non-read tool calls. A local profile can set per_call_approval to false after review. Actuator commands run under the Windows user account; the gateway does not sandbox them. The tool count comes from the running actuator backend and its capability settings. The optional /orch/mcp route needs a separate Orchestrator HTTP backend and is not started by these scripts. Local profile and OAuth state are excluded from Git.
+
+Publish only the OAuth gateway through Funnel; never publish the backend or owner console. The backend port comes from the profile; `actuator_admin_port` defaults to 8766 so it can coexist with OpenAI Tunnel. HTTP environment variables affect only the new process. Backend permission settings still apply.
+
+Stop: Ctrl+C in the backend/gateway consoles. To disable Funnel, use `tailscale funnel --https=443 off` (or your chosen HTTPS port); this affects all paths on that port. Avoid `funnel reset` when other services exist. Roll back by checking out the preceding tag/commit and retaining private profile/state directories; do not restore revoked tokens.
+
+CI runs on every PR: Linux security regressions, Windows regressions and a real loopback HTTP gateway, then reproducible ZIP/wheel builds. Loopback tests do not replace ChatGPT OAuth consent and a public Funnel connection on the installing PC.

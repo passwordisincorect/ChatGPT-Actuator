@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chatgpt-actuator"
-version = "1.1.0"
+version = "1.2.0"
 description = "A permission-gated Windows MCP actuator for ChatGPT."
 readme = "README.md"
 license = "MIT"
@@ -18,6 +18,9 @@ dependencies = [
     "pywinauto>=0.6.9,<0.7",
     "playwright>=1.55,<2"
 ]
+
+[project.optional-dependencies]
+tailscale = ["httpx>=0.27,<1", "starlette>=0.38,<1", "uvicorn>=0.30,<1"]
 
 [project.scripts]
 chatgpt-actuator = "chatgpt_actuator.server:main"

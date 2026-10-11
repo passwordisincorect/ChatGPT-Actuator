@@ -32,14 +32,14 @@ def project_version() -> str:
 
 
 def copy_release_tree(stage: Path) -> None:
-    for name in ("src", "config", "tests"):
+    for name in ("src", "config", "tests", "integrations"):
         src = ROOT / name
         if src.exists():
             shutil.copytree(
                 src,
                 stage / name,
                 dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.egg-info"),
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.egg-info", "connection-profiles.local.json", "*.sqlite3", "*.jsonl", "*.log"),
             )
 
     release_scripts = (
@@ -62,6 +62,8 @@ def copy_release_tree(stage: Path) -> None:
         "start-tunnel.ps1",
         "test.ps1",
         "tunnel-manager.ps1",
+        "gateway-profile.ps1",
+        "start-actuator-http.ps1",
         "uninstall.ps1",
         "verify-release.ps1",
         "verify_runtime.py",
@@ -73,7 +75,7 @@ def copy_release_tree(stage: Path) -> None:
         if src.exists():
             shutil.copy2(src, scripts_stage / name)
 
-    for name in ("pyproject.toml", "README.md", "README.vi.md", "LICENSE"):
+    for name in ("pyproject.toml", "README.md", "README.vi.md", "LICENSE", "CHANGELOG.md", "RELEASE_NOTES_1.2.0.md"):
         shutil.copy2(ROOT / name, stage / name)
 
 
@@ -182,13 +184,13 @@ def write_safe_release_config(stage: Path, version: str) -> None:
 
 def validate_release_tree(stage: Path) -> None:
     forbidden_parts = {".venv", "logs", "deployment", "dist", "build", "__pycache__"}
-    forbidden_names = {"control-plane-key.dpapi"}
+    forbidden_names = {"control-plane-key.dpapi", "connection-profiles.local.json"}
 
     for path in stage.rglob("*"):
         rel = path.relative_to(stage)
         if any(part in forbidden_parts or part.endswith(".egg-info") for part in rel.parts):
             raise RuntimeError(f"Forbidden release path included: {rel}")
-        if path.name in forbidden_names or path.suffix.casefold() in {".pyc", ".pyo"}:
+        if path.name in forbidden_names or path.suffix.casefold() in {".pyc", ".pyo", ".sqlite3", ".jsonl", ".log"}:
             raise RuntimeError(f"Forbidden release file included: {rel}")
 
     config_path = stage / "config" / "config.json"
@@ -286,8 +288,8 @@ Safe defaults:
 Requirements:
 - Windows
 - Python 3.12 x64
-- OpenAI tunnel-client installed
-- a configured/authorized tunnel profile
+- OpenAI tunnel-client and an authorized profile for the default connection
+- optionally, Tailscale Funnel and the tailscale Python extra for the gateway profile
 
 Install:
   powershell -ExecutionPolicy Bypass -File .\\scripts\\setup.ps1 -RecreateVenv

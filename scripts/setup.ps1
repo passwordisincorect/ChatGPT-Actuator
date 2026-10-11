@@ -1,7 +1,8 @@
 param(
     [switch]$EnableAutostart,
     [switch]$StartTunnel,
-    [switch]$RecreateVenv
+    [switch]$RecreateVenv,
+    [switch]$Tailscale
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,12 +46,13 @@ if (Test-Path $ConfigPath) {
 
 if ($RecreateVenv -or -not (Test-Path $VenvPython)) {
     Write-Host "Installing/recreating Python environment..."
-    if ($RecreateVenv) { & $InstallScript -RecreateVenv } else { & $InstallScript }
+    & $InstallScript -RecreateVenv:$RecreateVenv -Tailscale:$Tailscale
     if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed." }
 }
 else {
     Write-Host "Refreshing editable ChatGPT-Actuator installation..."
-    & $VenvPython -m pip install -e .
+    $InstallTarget = if ($Tailscale) { ".[tailscale]" } else { "." }
+    & $VenvPython -m pip install -e $InstallTarget
     if ($LASTEXITCODE -ne 0) { throw "pip install -e . failed." }
 }
 

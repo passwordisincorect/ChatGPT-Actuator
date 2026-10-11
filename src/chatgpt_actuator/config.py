@@ -317,7 +317,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if admin_host not in {"127.0.0.1", "localhost"}:
         raise ConfigError("admin.host must be loopback-only: 127.0.0.1 or localhost.")
 
-    admin_port = int(admin_cfg.get("port", 8765))
+    admin_port = int(os.environ.get("CHATGPT_ACTUATOR_ADMIN_PORT", admin_cfg.get("port", 8765)))
     if not 1 <= admin_port <= 65535:
         raise ConfigError("admin.port must be between 1 and 65535.")
 

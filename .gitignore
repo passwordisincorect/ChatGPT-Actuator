@@ -25,3 +25,9 @@ v*-ui-state.json
 .backup*/
 *.bak
 .patch_*.py
+
+# Optional gateway local profiles and OAuth state
+config/connection-profiles.local.json
+integrations/tailscale_gateway/*.sqlite3
+integrations/tailscale_gateway/*.jsonl
+integrations/tailscale_gateway/*.log
