@@ -6,6 +6,8 @@ ChatGPT-Actuator is a permission-gated Windows MCP actuator for ChatGPT.
 
 Version 1.2.0 adds an optional Tailscale Funnel connection with owner-approved OAuth, alongside the existing OpenAI Tunnel connection.
 
+**Source vs. published release:** The checked-in `pyproject.toml` is version **1.2.0**; the latest verified downloadable GitHub [Release is v1.0.0](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.0.0). The v1.0.0 ZIP/wheel are not a prebuilt distribution of the v1.2.0 source. For the current source, follow the setup and build instructions below; the [CI workflow](.github/workflows/ci.yml) validates the tracked code.
+
 ## Runtime
 
 - Windows desktop actuator
