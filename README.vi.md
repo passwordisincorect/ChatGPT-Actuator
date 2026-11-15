@@ -1,16 +1,26 @@
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-# ChatGPT-Actuator 1.2.0
+# ChatGPT-Actuator 1.3.0.dev0
 
 ChatGPT-Actuator là một Windows MCP actuator có lớp phân quyền, cho phép ChatGPT thao tác với Windows thông qua các capability được kiểm soát rõ ràng.
 
-Phiên bản 1.1.0 là baseline stable hiện tại của kiến trúc Windows control-plane.
+> **Bản ứng viên SCH3:** Nhánh này có thêm quy trình thử nghiệm cho schematic Altium Designer 26 một sheet. Đây chưa phải bản phát hành và không tự kích hoạt runtime mặc định. Xem [README-SCH3.md](README-SCH3.md) để biết phạm vi, cách chạy cục bộ và giới hạn kiểm chứng.
+
+Đây là source candidate `1.3.0.dev0`, tích hợp nền runtime r2 và SCH3. Release công bố vẫn là v1.0.0; nhánh này không tạo Release hoặc đổi runtime đang chạy.
+
+## Các ràng buộc của candidate
+
+- Ghi đè hoặc thay nội dung file có sẵn cần `expected_sha256` từ lần đọc mới.
+- Batch có tham chiếu sai bị chặn trước khi dispatch thao tác.
+- DOM yêu cầu Work Session đã xác thực; cách mở browser headed cũ bị chặn.
+- Input chuột/bàn phím vật lý vẫn bị tắt dù cấu hình cũ yêu cầu bật.
+- Chạy `python scripts/sch3_offline_verify.py` để kiểm toàn bộ regression offline và lưu receipt gắn hash nguồn. Bằng chứng AD26 native được ghi riêng.
 
 ## Kiến trúc chạy
 
 - Actuator chạy trên Windows desktop
 - MCP qua stdio phía sau OpenAI Secure MCP Tunnel
-- 73 MCP tools trong baseline v1.1.0 hiện tại (bản phát hành v1.0.0 có 45 tool)
+- 166 MCP tool được đăng ký trong source candidate này (Release v1.0.0 có 45 tool)
 - Admin UI cục bộ tại `http://127.0.0.1:8765/`
 - tunnel profile: `chatgpt-actuator`
 - health endpoint mặc định: `http://127.0.0.1:8081/healthz`
@@ -23,8 +33,7 @@ Phiên bản 1.1.0 là baseline stable hiện tại của kiến trúc Windows c
 - PowerShell
 - Chụp màn hình
 - Quản lý cửa sổ
-- Chuột
-- Bàn phím
+- UI Automation chạy nền; không expose thao tác chuột/bàn phím vật lý
 - Clipboard
 - Nhập văn bản có xác minh
 - Windows UI Automation
@@ -54,7 +63,7 @@ Nếu tab Admin cũ bị stale sau khi process restart, trang có thể tự rel
 
 ### Cập nhật v1.1.0: UIA background-first, Browser DOM, routing và EDA
 
-Source local hiện tại bổ sung năm semantic action: uia_scroll, uia_scroll_into_view, uia_set_range_value, uia_text_select_all và uia_window_action. Các UIA mutation tool hiện mặc định auto_focus_window=false, ưu tiên thao tác nền qua UI Automation. Những UIA action này không giả lập chuột hoặc bàn phím vật lý. Nhóm mouse/keyboard vẫn được giữ lại như fallback cần được gọi rõ ràng.
+Source v1.1.0 trước đây bổ sung năm semantic action: uia_scroll, uia_scroll_into_view, uia_set_range_value, uia_text_select_all và uia_window_action. Các UIA mutation tool hiện mặc định auto_focus_window=false, ưu tiên thao tác nền qua UI Automation. Những UIA action này không giả lập chuột hoặc bàn phím vật lý. Candidate SCH3 không expose mouse/keyboard vật lý làm fallback.
 
 Baseline v1.1.0 có 14 browser DOM tool dùng Playwright attach vào Microsoft Edge qua CDP: dom_list_tabs, dom_find, dom_details, dom_read_text, dom_click, dom_set_value, dom_select, dom_toggle, dom_scroll_into_view, dom_scroll, dom_wait, dom_open_tab, dom_navigate và dom_close_tab. CDP hỗ trợ tự phát hiện qua file DevToolsActivePort cục bộ của Edge (khi bật remote debugging ở edge://inspect) hoặc dùng endpoint loopback chỉ định; quyền DOM tiếp tục bị giới hạn bằng allowed-host list. Các DOM action không dùng chuột hoặc bàn phím vật lý của Windows.
 
@@ -180,7 +189,7 @@ Verifier kiểm tra:
 6. khả năng build ZIP và wheel reproducible
 7. build artifact release cuối
 
-Số MCP tool kỳ vọng trong baseline v1.1.0 hiện tại: **73**.
+Số MCP tool được đăng ký kỳ vọng trong candidate này: **166**.
 
 Trước khi phát hành v1.0.0, release candidate cũng đã vượt qua test end-to-end thực tế theo đường ChatGPT → Secure MCP Tunnel → ChatGPT-Actuator → Windows, gồm chọn tab bằng UI Automation, verified text replacement/read-back, xử lý dialog và autostart sau reboot.
 

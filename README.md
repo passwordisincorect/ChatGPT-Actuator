@@ -1,18 +1,28 @@
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-# ChatGPT-Actuator 1.2.0
+# ChatGPT-Actuator 1.3.0.dev0
 
 ChatGPT-Actuator is a permission-gated Windows MCP actuator for ChatGPT.
 
-Version 1.2.0 adds an optional Tailscale Funnel connection with owner-approved OAuth, alongside the existing OpenAI Tunnel connection.
+> **SCH3 candidate:** This branch also contains an experimental, single-sheet Altium Designer 26 schematic workflow. It is not a release or activation of the default runtime. See [README-SCH3.md](README-SCH3.md) for scope, local setup, and validation limits.
 
-**Source vs. published release:** The checked-in `pyproject.toml` is version **1.2.0**; the latest verified downloadable GitHub [Release is v1.0.0](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.0.0). The v1.0.0 ZIP/wheel are not a prebuilt distribution of the v1.2.0 source. For the current source, follow the setup and build instructions below; the [CI workflow](.github/workflows/ci.yml) validates the tracked code.
+This source candidate brings the r2 runtime foundation and SCH3 schematic tools into the repository. It retains the optional Tailscale Funnel/OAuth and OpenAI Tunnel connections from 1.2.0.
+
+**Source vs. published release:** The checked-in `pyproject.toml` is version **1.3.0.dev0**; the latest verified downloadable GitHub [Release is v1.0.0](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.0.0). The v1.0.0 ZIP/wheel are not a prebuilt distribution of this development source. For the current source, follow the setup and build instructions below; the [CI workflow](.github/workflows/ci.yml) validates the tracked code.
+
+## Candidate integration contracts
+
+- Replacing or overwriting an existing file requires `expected_sha256` from a fresh read.
+- Invalid batch references are rejected before any action is dispatched.
+- DOM access requires an authenticated Work Session; legacy headed browser launching is blocked.
+- Physical mouse/keyboard input stays disabled even when a legacy config requests it.
+- Run `python scripts/sch3_offline_verify.py` for the full source-bound offline regression suite. Native AD26 evidence is summarized separately.
 
 ## Runtime
 
 - Windows desktop actuator
 - MCP over stdio behind OpenAI Secure MCP Tunnel
-- 73 MCP tools in the current v1.1.0 baseline (the published v1.0.0 release had 45)
+- 166 registered MCP tools in this source candidate; the published v1.0.0 release had 45
 - local Admin UI on `http://127.0.0.1:8765/`
 - tunnel profile: `chatgpt-actuator`
 - default tunnel health: `http://127.0.0.1:8081/healthz`
@@ -25,8 +35,7 @@ Version 1.2.0 adds an optional Tailscale Funnel connection with owner-approved O
 - PowerShell
 - Screen capture
 - Window management
-- Mouse
-- Keyboard
+- Background-only UI Automation; physical mouse/keyboard input tools are not exposed
 - Clipboard
 - Verified text input
 - Windows UI Automation
@@ -56,7 +65,7 @@ A stale Admin browser tab automatically reloads after a process restart and rest
 
 ### v1.1.0 background-first UIA, Browser DOM, routing and EDA update
 
-The current local source adds five semantic UI Automation actions: uia_scroll, uia_scroll_into_view, uia_set_range_value, uia_text_select_all, and uia_window_action. Existing UIA mutation tools now default to auto_focus_window=false, so they attempt background semantic actions first. These UIA actions do not synthesize physical mouse or keyboard input. Mouse and keyboard tools remain available only as explicit fallback capabilities.
+The historical v1.1.0 source added five semantic UI Automation actions: uia_scroll, uia_scroll_into_view, uia_set_range_value, uia_text_select_all, and uia_window_action. Existing UIA mutation tools now default to auto_focus_window=false, so they attempt background semantic actions first. These UIA actions do not synthesize physical mouse or keyboard input. The SCH3 candidate does not expose physical mouse/keyboard input as a fallback.
 
 The v1.1.0 baseline includes 14 browser DOM tools backed by Playwright attached to Microsoft Edge through CDP: dom_list_tabs, dom_find, dom_details, dom_read_text, dom_click, dom_set_value, dom_select, dom_toggle, dom_scroll_into_view, dom_scroll, dom_wait, dom_open_tab, dom_navigate, and dom_close_tab. CDP supports auto-discovery through Edge's local DevToolsActivePort file (for an edge://inspect-enabled existing browser) or an explicit loopback endpoint; DOM access is further restricted by an allowed-host list. DOM actions do not use the physical OS mouse or keyboard.
 
@@ -182,7 +191,7 @@ The verifier checks:
 6. reproducible ZIP and wheel builds
 7. final release artifact build
 
-Expected MCP tool count for the current v1.1.0 baseline: **73**.
+Expected registered MCP tool count for this candidate: **166**.
 
 Before v1.0.0 was published, the release candidate also passed live end-to-end testing through ChatGPT → Secure MCP Tunnel → ChatGPT-Actuator → Windows, including UI Automation tab selection, verified text replacement/read-back, dialog handling and autostart-after-reboot.
 

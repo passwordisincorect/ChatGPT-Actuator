@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sys
 import tempfile
 import tomllib
 import urllib.request
@@ -15,8 +16,17 @@ from mcp.client.stdio import stdio_client
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
-EXPECTED_TOOL_COUNT = 73
+PYTHON = Path(sys.executable)
+EXPECTED_TOOL_COUNT = 166
+REQUIRED_CORE_TOOLS = frozenset({
+    "system_info", "filesystem_list_roots", "filesystem_read_text",
+    "filesystem_write_text", "batch_preview", "security_policy_info",
+})
+REQUIRED_SCH3_TOOLS = frozenset({
+    "eda_altium_sch_check_pin_contracts", "eda_altium_sch_diff_connectivity",
+    "eda_altium_sch_lint", "eda_altium_sch_erc",
+    "eda_altium_sch_edit_commit", "eda_altium_sch_edit_restore",
+})
 
 
 def expected_version() -> str:
@@ -92,8 +102,16 @@ async def verify() -> dict:
             encoding="utf-8",
         )
 
-        env = os.environ.copy()
+        # Keep the subprocess tied to this checkout and interpreter without
+        # inheriting a developer's global Actuator/MCP settings.
+        env = {
+            key: os.environ[key]
+            for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
+            if os.environ.get(key)
+        }
+        env["PYTHONPATH"] = str(ROOT / "src")
         env["CHATGPT_ACTUATOR_CONFIG"] = str(config_path)
+        env["ACTUATOR_MCP_TRANSPORT"] = "stdio"
 
         params = StdioServerParameters(
             command=str(PYTHON),
@@ -107,6 +125,8 @@ async def verify() -> dict:
             "expected_version": version,
             "admin_port": port,
             "expected_tool_count": EXPECTED_TOOL_COUNT,
+            "expected_core_tool_names": sorted(REQUIRED_CORE_TOOLS),
+            "expected_sch3_tool_names": sorted(REQUIRED_SCH3_TOOLS),
         }
 
         async with stdio_client(params) as (read, write):
@@ -116,6 +136,9 @@ async def verify() -> dict:
                 result["server_version"] = init.server_info.version
                 result["tool_count"] = len(tools.tools)
                 result["tool_names"] = sorted(tool.name for tool in tools.tools)
+                tool_names = set(result["tool_names"])
+                result["missing_core_tool_names"] = sorted(REQUIRED_CORE_TOOLS - tool_names)
+                result["missing_sch3_tool_names"] = sorted(REQUIRED_SCH3_TOOLS - tool_names)
 
                 roots_result = await session.call_tool("filesystem_list_roots", {})
                 sys_result = await session.call_tool("system_info", {})
@@ -129,6 +152,8 @@ async def verify() -> dict:
                 result["ok"] = (
                     result["server_version"] == version
                     and result["tool_count"] == EXPECTED_TOOL_COUNT
+                    and not result["missing_core_tool_names"]
+                    and not result["missing_sch3_tool_names"]
                     and result["filesystem_roots"] == [str(ROOT)]
                     and result["system_hostname_present"] is True
                     and status == 200

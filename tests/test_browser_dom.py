@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from chatgpt_actuator.audit import AuditLogger
@@ -126,8 +127,10 @@ class BrowserDOMServiceTests(unittest.TestCase):
                 }
             )
             service._worker_edge_pids = lambda: [4242]
-            with self.assertRaisesRegex(RuntimeError, "Duplicate launch blocked"):
-                asyncio.run(service._launch_dedicated_edge())
+            with patch("chatgpt_actuator.tools.browser_dom.subprocess.Popen") as popen:
+                with self.assertRaisesRegex(PermissionError, "BACKGROUND_ONLY"):
+                    asyncio.run(service._launch_dedicated_edge())
+                popen.assert_not_called()
 
     def test_launch_dedicated_edge_reuses_existing_ready_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -146,7 +149,10 @@ class BrowserDOMServiceTests(unittest.TestCase):
                 }
             )
             service._worker_edge_pids = lambda: [4242]
-            asyncio.run(service._launch_dedicated_edge())
+            with patch("chatgpt_actuator.tools.browser_dom.subprocess.Popen") as popen:
+                with self.assertRaisesRegex(PermissionError, "BACKGROUND_ONLY"):
+                    asyncio.run(service._launch_dedicated_edge())
+                popen.assert_not_called()
             self.assertTrue(active_port.is_file())
 
     def test_timeout_is_clamped(self) -> None:
@@ -172,6 +178,7 @@ class BrowserDOMServiceTests(unittest.TestCase):
 
     def test_persistent_browser_connection_is_reused(self) -> None:
         service = self.make_service()
+        from chatgpt_actuator.tool_policy import Principal, principal_context
 
         class FakeBrowser:
             def is_connected(self):
@@ -179,14 +186,32 @@ class BrowserDOMServiceTests(unittest.TestCase):
 
         browser = FakeBrowser()
         service._browser = browser
+        context = object()
+        service._session_contexts[("browser-test", "authenticated-test-session")] = context
 
         async def check():
             first = await service._ensure_browser()
             second = await service._ensure_browser()
-            self.assertIs(first, browser)
-            self.assertIs(second, browser)
+            self.assertIs(first.contexts[0], context)
+            self.assertIs(second.contexts[0], context)
+            self.assertTrue(first.is_connected())
+            self.assertTrue(second.is_connected())
 
-        asyncio.run(check())
+        token = principal_context.set(Principal(owner="browser-test", session="authenticated-test-session"))
+        try:
+            asyncio.run(check())
+        finally:
+            principal_context.reset(token)
+
+    def test_persistent_browser_connection_requires_authenticated_session(self) -> None:
+        service = self.make_service()
+        from chatgpt_actuator.tool_policy import principal_context
+        token = principal_context.set(None)
+        try:
+            with self.assertRaisesRegex(PermissionError, "authenticated Work Session"):
+                asyncio.run(service._ensure_browser())
+        finally:
+            principal_context.reset(token)
 
 
 if __name__ == "__main__":

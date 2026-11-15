@@ -10,6 +10,7 @@ from threading import Thread
 from urllib.parse import parse_qs, urlparse
 
 from .runtime import RuntimeManager
+from .config import project_root
 
 
 _HTML = r"""<!doctype html>
@@ -17,7 +18,7 @@ _HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ChatGPT-Actuator Admin</title>
+<title>Actuator Control Center · Admin</title>
 <style>
 :root{font-family:Segoe UI,Arial,sans-serif;color-scheme:light dark}
 body{margin:0;background:#111827;color:#e5e7eb}
@@ -40,14 +41,27 @@ button.danger{background:#b91c1c}
 .audit div{padding:4px 0;border-bottom:1px solid #1e293b}
 .small{font-size:12px;color:#94a3b8}
 .badge{display:inline-block;padding:3px 8px;border-radius:999px;background:#064e3b;color:#a7f3d0;font-size:12px}
+#control-panel{margin:0 0 14px}
+.control-frame{display:block;width:100%;height:850px;min-height:570px;border:1px solid #334155;border-radius:12px;background:#0a0f18}
+.admin-details{border:1px solid #334155;border-radius:12px;padding:0 16px 16px;background:#172235}
+.admin-details>summary{cursor:pointer;padding:15px 4px;font-size:16px;font-weight:650;color:#eef4fb}
+.admin-details>summary:focus-visible{outline:2px solid #8bb3ff;outline-offset:2px}
+.admin-details>.status{margin-bottom:12px}
+@media(max-width:600px){main{padding:12px}.control-frame{height:760px;min-height:500px}.admin-details{padding:0 10px 12px}}
 </style>
 </head>
 <body>
 <header>
-<h1>ChatGPT-Actuator Admin</h1>
-<div class="sub">Local permission manager · loopback only · <span id="version"></span></div>
+<h1>Actuator Control Center</h1>
+<div class="sub">Trung tâm điều khiển &amp; quản trị Actuator · chỉ truy cập nội bộ · <span id="version"></span></div>
 </header>
 <main>
+
+<section id="control-panel" aria-label="Trung tâm điều khiển">
+  <iframe class="control-frame" id="control-center-frame" src="http://127.0.0.1:8764/?embedded=1" title="Actuator Control Center" loading="eager" referrerpolicy="no-referrer" allow="clipboard-read; clipboard-write"></iframe>
+</section>
+<details id="admin-panel" class="admin-details">
+  <summary>Quản trị Actuator · Cấu hình và quyền truy cập</summary>
 <div class="status" id="status">Loading...</div>
 
 <div class="actions">
@@ -152,6 +166,7 @@ button.danger{background:#b91c1c}
 <button class="secondary" onclick="loadAudit()">Refresh audit</button>
 </div>
 <div class="audit" id="audit"></div>
+</details>
 </main>
 <script>
 const TOKEN = "__TOKEN__";
@@ -173,7 +188,7 @@ async function api(path, opts={}){
 }
 function fill(s){
   const c=s.capabilities;
-  $('version').textContent=s.version+' · generation '+s.generation;
+  $('version').textContent=s.version+' Â· generation '+s.generation;
   $('fs_enabled').checked=c.filesystem.enabled;$('fs_readonly').checked=c.filesystem.read_only;
   $('fs_create').checked=c.filesystem.allow_create;$('fs_edit').checked=c.filesystem.allow_edit;
   $('fs_move').checked=c.filesystem.allow_move;$('fs_delete').checked=c.filesystem.allow_delete;
@@ -222,7 +237,7 @@ async function load(){
       sessionStorage.removeItem('actuator_pending_patch');
       setStatus('Admin session refreshed. Your unsaved choices were restored; review them and press Save & apply now.');
     }else{
-      setStatus('Ready · runtime generation '+s.generation);
+      setStatus('Ready Â· runtime generation '+s.generation);
     }
     await loadAudit();
   }catch(e){setStatus(e.message,false);}
@@ -249,7 +264,7 @@ async function save(){
  try{
   const s=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requested)});
   sessionStorage.removeItem('actuator_pending_patch');
-  fill(s);setStatus('Saved and applied immediately · generation '+s.generation);await loadAudit();
+  fill(s);setStatus('Saved and applied immediately Â· generation '+s.generation);await loadAudit();
  }catch(e){
   if(!String(e.message||'').includes('Admin session expired')){
     sessionStorage.removeItem('actuator_pending_patch');
@@ -258,7 +273,7 @@ async function save(){
  }
 }
 async function reloadDisk(){
- try{const s=await api('/api/reload',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});fill(s);setStatus('Reloaded config.json · generation '+s.generation);await loadAudit();}
+ try{const s=await api('/api/reload',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});fill(s);setStatus('Reloaded config.json Â· generation '+s.generation);await loadAudit();}
  catch(e){setStatus('Reload failed: '+e.message,false);}
 }
 async function loadAudit(){
@@ -270,6 +285,21 @@ async function loadAudit(){
   }
  }catch(e){$('audit').textContent=e.message;}
 }
+function revealAdminFromHash(){
+  if(location.hash==='#admin-panel'||location.hash==='#admin'){
+    $('admin-panel').open=true;
+    $('admin-panel').scrollIntoView({behavior:'smooth',block:'start'});
+  }
+}
+window.addEventListener('hashchange',revealAdminFromHash);
+window.addEventListener('message',event=>{
+  const frame=$('control-center-frame');
+  if(event.origin!=='http://127.0.0.1:8764'||event.source!==frame.contentWindow)return;
+  if(!event.data||event.data.type!=='actuator-control-height')return;
+  const h=Number(event.data.height);
+  if(Number.isFinite(h)&&h>=300&&h<=10000)frame.style.height=Math.ceil(h+12)+'px';
+});
+revealAdminFromHash();
 load();
 </script>
 </body>
@@ -278,12 +308,13 @@ load();
 
 
 class AdminServer:
-    def __init__(self, runtime: RuntimeManager, dom_host=None) -> None:
+    def __init__(self, runtime: RuntimeManager, dom_host=None, *, broker_only=False) -> None:
         self.runtime = runtime
         self.dom_host = dom_host
+        self.broker_only = bool(broker_only)
         self.token = secrets.token_urlsafe(32)
         default_dom_token = (
-            Path(__file__).resolve().parents[2].parent
+            project_root().parent
             / ".chatgpt-dom-broker-token"
         )
         self.dom_token_file = Path(
@@ -320,16 +351,23 @@ class AdminServer:
 
     def start(self) -> None:
         cfg = self.runtime.config.admin
+        if self.broker_only:
+            from types import SimpleNamespace
+            cfg = SimpleNamespace(enabled=True, host='127.0.0.1', port=8766)
         if not cfg.enabled:
             return
         if cfg.host not in {"127.0.0.1", "localhost"}:
             raise RuntimeError("Admin server refuses non-loopback bind.")
 
         runtime = self.runtime
+        broker_only = self.broker_only
         token = self.token
         dom_host = self.dom_host
         dom_token = self.dom_token
+        from .broker_sessions import BrokerSessions
+        broker_sessions = BrokerSessions(runtime, dom_host, dom_token) if dom_host else None
         dom_actions = {
+            'snapshot': 'snapshot', 'snapshot_diff': 'snapshot_diff', 'accessibility_snapshot': 'accessibility_snapshot',
             "list_tabs": "list_tabs",
             "peek_tabs": "peek_tabs",
             "ensure_tab_pool": "ensure_tab_pool",
@@ -364,7 +402,10 @@ class AdminServer:
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    pass  # Client deadline may expire while an owned operation finishes.
 
             def _host_ok(self) -> bool:
                 host_header = self.headers.get("Host", "")
@@ -398,6 +439,9 @@ class AdminServer:
                     self._json(HTTPStatus.FORBIDDEN, {"error": "Invalid Host header."})
                     return
                 parsed = urlparse(self.path)
+                if broker_only and parsed.path not in {'/healthz','/dom/healthz'}:
+                    self._json(HTTPStatus.NOT_FOUND, {'error':'Not found'})
+                    return
                 if parsed.path == "/":
                     data = html.encode("utf-8")
                     self.send_response(HTTPStatus.OK)
@@ -408,10 +452,13 @@ class AdminServer:
                     self.send_header("X-Content-Type-Options", "nosniff")
                     self.send_header(
                         "Content-Security-Policy",
-                        "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+                        "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-src http://127.0.0.1:8764; frame-ancestors 'none'"
                     )
                     self.end_headers()
-                    self.wfile.write(data)
+                    try:
+                        self.wfile.write(data)
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        pass
                     return
 
                 if parsed.path == "/api/status":
@@ -440,6 +487,7 @@ class AdminServer:
                         {
                             "status": "ok",
                             "version": runtime.config.version,
+                            "runtime_version": __import__('chatgpt_actuator').__version__,
                             "generation": runtime.generation,
                         },
                     )
@@ -452,7 +500,10 @@ class AdminServer:
                             "status": "ok" if dom_host is not None else "disabled",
                             "service": "chatgpt-actuator-dom-broker",
                             "version": runtime.config.version,
+                            "runtime_version": __import__('chatgpt_actuator').__version__,
                             "generation": runtime.generation,
+                            "broker_protocol": 2,
+                            "work_session_required": True,
                         },
                     )
                     return
@@ -464,6 +515,9 @@ class AdminServer:
                     self._json(HTTPStatus.FORBIDDEN, {"error": "Invalid Host header."})
                     return
 
+                if broker_only and self.path != '/api/dom':
+                    self._json(HTTPStatus.NOT_FOUND, {'error':'Not found'})
+                    return
                 if self.path == "/api/dom":
                     if dom_host is None:
                         self._json(
@@ -478,15 +532,18 @@ class AdminServer:
                         )
                         return
                     try:
+                        dispatched = False
+                        action = "unknown"
                         request = self._read_json()
                         action = str(request.get("action", "")).strip()
                         method = dom_actions.get(action)
-                        if method is None:
+                        if method is None and action not in {'session_open','session_close'}:
                             raise ValueError("Unsupported DOM broker action.")
                         args = request.get("args", {})
                         if not isinstance(args, dict):
                             raise TypeError("args must be a JSON object.")
-                        result = dom_host.call(method, timeout=40.0, **args)
+                        dispatched = True
+                        result = broker_sessions.invoke(action, args, request.get('work_session'))
                         runtime.audit.record(
                             "dom_broker_call",
                             broker_action=action,
@@ -497,6 +554,8 @@ class AdminServer:
                             {"ok": True, "result": result},
                         )
                     except Exception as exc:
+                        from .operation_errors import describe
+                        diagnostic = describe(exc, action, dispatched=dispatched)
                         runtime.audit.record(
                             "dom_broker_call",
                             ok=False,
@@ -508,7 +567,8 @@ class AdminServer:
                             {
                                 "ok": False,
                                 "error_type": type(exc).__name__,
-                                "error": str(exc),
+                                "error": diagnostic['message'],
+                                "diagnostic": diagnostic,
                             },
                         )
                     return

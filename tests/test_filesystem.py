@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from chatgpt_actuator.audit import AuditLogger
+from chatgpt_actuator.atomic_files import FileConflictError, FilePreconditionRequired
 from chatgpt_actuator.config import FileSystemConfig
 from chatgpt_actuator.tools import FileSystemService
 
@@ -59,7 +60,10 @@ class FileSystemTests(unittest.TestCase):
             self.assertEqual(created["action"], "create")
             self.assertTrue(file1.exists())
 
-            edited = service.replace_in_file(str(file1), "hello", "xin chao")
+            baseline = service.read_text(str(file1))
+            edited = service.replace_in_file(
+                str(file1), "hello", "xin chao", expected_sha256=baseline["sha256"]
+            )
             self.assertEqual(edited["replacements_made"], 1)
             self.assertEqual(file1.read_text(encoding="utf-8"), "xin chao")
 
@@ -84,7 +88,17 @@ class FileSystemTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 service.write_text(str(target), "new", overwrite=False)
 
-            service.write_text(str(target), "new", overwrite=True)
+            with self.assertRaises(FilePreconditionRequired):
+                service.write_text(str(target), "new", overwrite=True)
+            baseline = service.read_text(str(target))
+            with self.assertRaises(FileConflictError):
+                service.write_text(
+                    str(target), "stale", overwrite=True, expected_sha256="0" * 64
+                )
+            self.assertEqual(target.read_text(encoding="utf-8"), "old")
+            service.write_text(
+                str(target), "new", overwrite=True, expected_sha256=baseline["sha256"]
+            )
             self.assertEqual(target.read_text(encoding="utf-8"), "new")
 
     def test_allowed_root_cannot_be_deleted(self):

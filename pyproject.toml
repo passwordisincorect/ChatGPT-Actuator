@@ -4,19 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chatgpt-actuator"
-version = "1.2.0"
+version = "1.3.0.dev0"
 description = "A permission-gated Windows MCP actuator for ChatGPT."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=2,<3",
     "psutil>=6,<8",
+    "cryptography>=43,<51",
     "Pillow>=10,<13",
     "pywin32>=306",
     "pywinauto>=0.6.9,<0.7",
-    "playwright>=1.55,<2"
+    "playwright>=1.55,<2",
+    "kicad-sch-api==0.5.6"
 ]
 
 [project.optional-dependencies]
@@ -30,3 +32,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+chatgpt_actuator = ["tools/altium_scripts/*.pas"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from ..audit import AuditLogger
 from ..config import FileSystemConfig
 from ..errors import BinaryFileError, FileTooLargeError
 from ..security import PathGuard
+from ..atomic_files import serialized_write, atomic_write, check_expected, FilePreconditionRequired, FileConflictError
 
 
 class FileSystemService:
@@ -103,7 +105,7 @@ class FileSystemService:
         self.audit.record("filesystem_stat", path=str(resolved))
         return result
 
-    def read_text(self, path: str, max_bytes: int | None = None) -> dict:
+    def read_text(self, path: str, max_bytes: int | None = None, proposed_content: str | None = None) -> dict:
         self._require_enabled()
         resolved = self.guard.resolve_existing(path)
         if not resolved.is_file():
@@ -114,7 +116,11 @@ class FileSystemService:
         if size > limit:
             raise FileTooLargeError(f"File is {size} bytes; read limit is {limit} bytes.")
 
-        data = resolved.read_bytes()
+        # The file may grow after stat(); never allocate an unbounded live file.
+        with resolved.open('rb') as stream:
+            data = stream.read(limit + 1)
+        if len(data) > limit:
+            raise FileTooLargeError(f"File grew beyond the read limit of {limit} bytes.")
         if b"\x00" in data[:8192]:
             raise BinaryFileError(f"Binary file refused: {resolved}")
 
@@ -124,7 +130,13 @@ class FileSystemService:
             raise BinaryFileError(f"File is not valid UTF-8 text: {resolved}") from exc
 
         self.audit.record("filesystem_read_text", path=str(resolved), size_bytes=size)
-        return {"path": str(resolved), "encoding": "utf-8", "size_bytes": size, "content": text}
+        result = {"path": str(resolved), "encoding": "utf-8", "size_bytes": len(data), "content": text, "sha256": hashlib.sha256(data).hexdigest()}
+        if proposed_content is not None:
+            if not isinstance(proposed_content,str) or len(proposed_content.encode('utf-8'))>self.config.max_read_bytes:
+                raise ValueError('Proposed content exceeds preview limit')
+            from ..file_preview import preview
+            result['preview']=preview(resolved,result,proposed_content,not self.config.read_only and self.config.allow_edit)
+        return result
 
     def search(self, root: str, query: str, recursive: bool = True, max_results: int | None = None) -> dict:
         self._require_enabled()
@@ -170,17 +182,30 @@ class FileSystemService:
         self.audit.record("filesystem_create_directory", path=str(resolved))
         return {"created": str(resolved), "type": "directory"}
 
+    @serialized_write
     def write_text(
         self,
         path: str,
         content: str,
         overwrite: bool = False,
         create_parents: bool = True,
+        expected_sha256: str | None = None,
+        preview_sha256: str | None = None,
     ) -> dict:
         target = self.guard.resolve_target(path)
+        if target.exists() and overwrite and expected_sha256 is None:
+            raise FilePreconditionRequired('Existing-file overwrite requires expected_sha256 from filesystem_read_text')
+        check_expected(target, expected_sha256)
+        if preview_sha256 is not None:
+            from ..file_preview import fingerprint
+            if expected_sha256 is None:raise FilePreconditionRequired('Preview commit requires baseline checksum')
+            if preview_sha256 != fingerprint(target,expected_sha256,content):
+                raise FileConflictError('Preview differs from path, baseline or proposed content')
 
         if target.exists():
             self._require("edit")
+            if overwrite and expected_sha256 is None:
+                raise FilePreconditionRequired('Existing-file overwrite requires expected_sha256 from filesystem_read_text')
             resolved_existing = self.guard.resolve_existing(target)
             if not resolved_existing.is_file():
                 raise IsADirectoryError(str(resolved_existing))
@@ -198,14 +223,17 @@ class FileSystemService:
             elif not target.parent.exists():
                 raise FileNotFoundError(str(target.parent))
 
-        target.write_text(content, encoding="utf-8")
+        digest = atomic_write(target, content.encode("utf-8"), overwrite=action == "overwrite", expected=expected_sha256)
         resolved = self.guard.resolve_existing(target)
         size = resolved.stat().st_size
         self.audit.record("filesystem_write_text", path=str(resolved), write_mode=action, size_bytes=size)
-        return {"path": str(resolved), "action": action, "size_bytes": size, "encoding": "utf-8"}
+        return {"path": str(resolved), "action": action, "size_bytes": size, "encoding": "utf-8", "sha256": digest}
 
-    def replace_in_file(self, path: str, old_text: str, new_text: str, max_replacements: int = 1) -> dict:
+    @serialized_write
+    def replace_in_file(self, path: str, old_text: str, new_text: str, max_replacements: int = 1, expected_sha256: str | None = None) -> dict:
         self._require("edit")
+        if expected_sha256 is None:
+            raise FilePreconditionRequired('Replacing file contents requires expected_sha256 from filesystem_read_text')
         if not old_text:
             raise ValueError("old_text must not be empty.")
         if max_replacements < 1:
@@ -215,14 +243,16 @@ class FileSystemService:
         if not resolved.is_file():
             raise IsADirectoryError(str(resolved))
 
-        original = self.read_text(str(resolved))["content"]
+        snapshot = self.read_text(str(resolved))
+        check_expected(resolved, expected_sha256)
+        original = snapshot["content"]
         occurrences = original.count(old_text)
         if occurrences == 0:
             raise ValueError("old_text was not found in the file.")
 
         replacements = min(occurrences, max_replacements)
         updated = original.replace(old_text, new_text, replacements)
-        resolved.write_text(updated, encoding="utf-8")
+        digest = atomic_write(resolved, updated.encode("utf-8"), overwrite=True, expected=snapshot["sha256"])
         self.audit.record(
             "filesystem_replace_in_file",
             path=str(resolved),
@@ -233,6 +263,7 @@ class FileSystemService:
             "path": str(resolved),
             "occurrences_found": occurrences,
             "replacements_made": replacements,
+            "sha256": digest,
         }
 
     def move_path(self, source: str, destination: str, overwrite: bool = False) -> dict:

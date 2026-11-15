@@ -2,7 +2,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main, feature/multi-profile-connectors]
+    branches: [main, feature/multi-profile-connectors, feature/altium-sch3]
   workflow_dispatch:
 permissions:
   contents: read

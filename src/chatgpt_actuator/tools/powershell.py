@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import shutil
 import subprocess
 import time
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -41,7 +43,9 @@ class PowerShellService:
             "executable": self.executable,
             "default_cwd": str(self.default_cwd),
             "allowed_working_roots": [str(p) for p in self.allowed_working_roots],
-            "execution_mode": "current_user",
+            "execution_mode": "background_private_desktop",
+            "background_only":True,
+            "child_tree_bounded":True,
             "filesystem_sandbox_applies": False,
             "exit_code": result["exit_code"],
             "stdout": result["stdout"],
@@ -53,6 +57,7 @@ class PowerShellService:
         script: str,
         cwd: str | None = None,
         timeout_seconds: float | None = None,
+        *, resource_limits=None, cancel=lambda:False,
     ) -> dict:
         if not self.config.enabled:
             raise PermissionError("PowerShell tools are disabled.")
@@ -68,7 +73,7 @@ class PowerShellService:
 
         resolved_cwd = self._resolve_cwd(cwd or str(self.default_cwd))
         timeout = self.config.default_timeout_seconds if timeout_seconds is None else float(timeout_seconds)
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout_seconds must be greater than 0.")
         timeout = min(timeout, self.config.max_timeout_seconds)
 
@@ -76,7 +81,7 @@ class PowerShellService:
             script,
             cwd=str(resolved_cwd),
             timeout_seconds=timeout,
-            audit_action="powershell_run",
+            audit_action="powershell_run",resource_limits=resource_limits,cancel=cancel,
         )
 
     def _execute(
@@ -85,6 +90,7 @@ class PowerShellService:
         cwd: str,
         timeout_seconds: float,
         audit_action: str,
+        *, resource_limits=None, cancel=lambda:False,
     ) -> dict:
         # Force UTF-8 for redirected stdout/stderr, then run the caller's script.
         wrapped = (
@@ -106,33 +112,15 @@ class PowerShellService:
             encoded,
         ]
 
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        started_at = time.monotonic()
-        proc = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            shell=False,
-            creationflags=creationflags,
-        )
-
-        timed_out = False
-        try:
-            stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            self._kill_process_tree(proc.pid)
-            stdout_bytes, stderr_bytes = proc.communicate()
-
-        duration_seconds = round(time.monotonic() - started_at, 3)
-        stdout, stdout_truncated = self._decode_and_limit(stdout_bytes or b"")
-        stderr, stderr_truncated = self._decode_and_limit(stderr_bytes or b"")
-        stderr = self._strip_progress_only_clixml(stderr)
-        truncated = stdout_truncated or stderr_truncated
-
-        exit_code = proc.returncode
+        from ..background_process import run_bounded
+        # Credentials and arbitrary inherited environment are not passed to caller scripts.
+        env={k:os.environ[k] for k in ('SystemRoot','WINDIR','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA','ProgramFiles','ProgramFiles(x86)','ProgramW6432','ComSpec') if k in os.environ}
+        native=Path(self.executable).parent
+        env['PATH']=os.pathsep.join([str(native),str(Path(os.environ.get('SystemRoot','C:/Windows'))/'System32'),os.environ.get('PATH','')])
+        env['PSModulePath']=str(native/'Modules')
+        result=run_bounded(argv,cwd,env,timeout_seconds,self.config.max_output_bytes,cancel,limits=resource_limits)
+        stdout=result['stdout'];stderr=self._strip_progress_only_clixml(result['stderr'])
+        timed_out=result['timed_out'];exit_code=result['exit_code'];truncated=result['output_truncated'];duration_seconds=result['duration_seconds']
         digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
 
         self.audit.record(
@@ -149,6 +137,8 @@ class PowerShellService:
         return {
             "exit_code": exit_code,
             "timed_out": timed_out,
+            "cancelled":result["cancelled"],
+            "background_only":True,
             "duration_seconds": duration_seconds,
             "cwd": cwd,
             "stdout": stdout,
@@ -168,6 +158,11 @@ class PowerShellService:
             return str(resolved)
 
         found = shutil.which(raw)
+        if not found and os.name == 'nt' and raw.casefold() == 'powershell.exe':
+            windows_root=os.environ.get('SystemRoot') or os.environ.get('WINDIR')
+            if windows_root:
+                native=Path(windows_root)/'System32/WindowsPowerShell/v1.0/powershell.exe'
+                if native.is_file():found=str(native)
         if not found:
             raise ConfigError(f"PowerShell executable was not found on PATH: {raw}")
         return str(Path(found).resolve(strict=True))

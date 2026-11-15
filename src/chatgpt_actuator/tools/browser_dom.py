@@ -6,6 +6,7 @@ import ctypes
 from ctypes import wintypes
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -17,6 +18,7 @@ from uuid import uuid4
 
 from ..audit import AuditLogger
 from ..config import BrowserDOMConfig
+from .dom_verification import value_result, checked_result
 
 
 class BrowserDOMService:
@@ -28,10 +30,19 @@ class BrowserDOMService:
         self.config = config
         self.audit = audit
         self._playwright = None
+        self._browser_job = None
         self._browser = None
+        self._session_contexts = {}
+        self._external_sessions = {}
         self._connect_lock: asyncio.Lock | None = None
         self._connected_endpoint: str | None = None
         self._stable_tabs: dict[str, object] = {}
+        self._pinned_elements = {}
+        self._retired_pins = {}
+        self._snapshot_frames = {}
+        from ..snapshot_cache import SnapshotCache
+        self._snapshots = SnapshotCache()
+        self._lifecycle_pages = set()
         self._edge_process = None
         self._worker_restore_foreground: int = 0
         self._worker_focus_guard_stop: threading.Event | None = None
@@ -116,171 +127,228 @@ class BrowserDOMService:
             if connected and worker_pids:
                 self._finalize_worker_window_background_state(worker_pids)
 
-    async def _ensure_browser(self):
-        """Return one persistent remote browser connection for this service instance."""
+    async def _ensure_browser(self,allow_managed_start=False):
+        """Reuse the selected session; managed context creation requires explicit opt-in."""
         self._require_enabled()
-
-        browser = self._browser
-        if browser is not None:
-            try:
-                if browser.is_connected():
-                    return browser
-            except Exception:
-                pass
-
+        from ..tool_policy import principal_context
+        from types import SimpleNamespace
+        principal = principal_context.get()
+        if principal is None or principal.session == "default":
+            raise PermissionError("DOM requires an authenticated Work Session")
+        key = (principal.owner, principal.session)
+        from ..automation_errors import BrowserSelectionRequired,BrowserConnectionUnavailable
+        external=self._external_sessions.get(key)
+        if external is not None:
+            if not external['browser'].is_connected():raise BrowserConnectionUnavailable('Attached browser disconnected; detach and attach again')
+            return SimpleNamespace(contexts=[external['context']],is_connected=external['browser'].is_connected)
+        context=self._session_contexts.get(key)
+        if context is not None and self._browser is not None and self._browser.is_connected():
+            return SimpleNamespace(contexts=[context],is_connected=self._browser.is_connected)
+        if not allow_managed_start:
+            raise BrowserSelectionRequired('No selected browser for this session; attach the intended tab or explicitly open with browser_mode=managed. No temporary profile was created')
         if self._connect_lock is None:
             self._connect_lock = asyncio.Lock()
-
         async with self._connect_lock:
-            browser = self._browser
-            if browser is not None:
-                try:
-                    if browser.is_connected():
-                        return browser
-                except Exception:
-                    pass
-
-            await self._disconnect_playwright()
-
-            try:
+            if self._browser is None or not self._browser.is_connected():
+                await self._disconnect_playwright(include_external=False)
                 from playwright.async_api import async_playwright
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Playwright is not installed. Run the ChatGPT-Actuator setup/install script again."
-                ) from exc
-
-            try:
-                endpoint = self._resolved_cdp_url()
-            except RuntimeError:
-                if not (
-                    self.config.cdp_url.strip().casefold() == "auto"
-                    and self.config.launch_if_missing
-                ):
-                    raise
-                await self._launch_dedicated_edge()
-                endpoint = self._resolved_cdp_url()
-            connect_timeout = max(1000, min(
-                self.config.max_timeout_ms,
-                max(self.config.default_timeout_ms, 15000),
-            ))
-
-            playwright = await async_playwright().start()
-            try:
-                browser = await self._connect_over_cdp_with_auto_allow(
-                    playwright,
-                    endpoint,
-                    connect_timeout,
-                )
-            except Exception as exc:
+                playwright = await async_playwright().start()
+                job = None
                 try:
-                    await playwright.stop()
-                except Exception:
-                    pass
+                    if os.name == 'nt':
+                        # Assign the owned driver before it spawns headless Edge.
+                        # Child processes inherit memory/CPU/lifetime limits.
+                        from ..windows_job import WindowsJob
+                        from ..resource_limits import validated
+                        driver = playwright._impl_obj._connection._transport._proc
+                        if driver is None or driver.returncode is not None:
+                            raise RuntimeError('Headless driver is unavailable')
+                        job = WindowsJob.from_pid(driver.pid,getattr(self,'resource_limits',validated()))
+                    browser = await playwright.chromium.launch(channel="msedge", headless=not self.config.visible_browser,
+                        args=['--renderer-process-limit=2','--disable-features=SpareRendererForSitePerProcess'],
+                        timeout=self.config.max_timeout_ms)
+                except BaseException as exc:
+                    # Close the owned process Job first: a failed/cancelled
+                    # launch can leave transport.stop waiting for a dead driver.
+                    self._observe_intentional_transport_shutdown(playwright)
+                    if job is not None: job.close()
+                    try:await asyncio.wait_for(playwright.stop(),timeout=3)
+                    except (Exception,asyncio.CancelledError):pass
+                    if isinstance(exc,asyncio.CancelledError):raise
+                    raise RuntimeError("Managed Edge unavailable")
+                self._playwright, self._browser = playwright, browser
+                self._browser_job = job
+                self._connected_endpoint = "visible://managed" if self.config.visible_browser else "headless://isolated"
+            context = self._session_contexts.get(key)
+            from ..resource_limits import validated
+            budget=getattr(self,"resource_limits",validated())
+            if context is None:
+                if len(self._session_contexts)>=budget['max_browser_contexts']:
+                    raise PermissionError('RESOURCE_LIMIT: browser context budget reached')
+                context = await self._browser.new_context(accept_downloads=False)
+                self._session_contexts[key] = context
+                context.on('page',lambda page:self._register_page_resource(page,key))
+            return SimpleNamespace(contexts=[context], is_connected=self._browser.is_connected)
 
-                # Normal Edge can expose DevToolsActivePort before showing the
-                # native "Allow remote debugging?" consent. A failed CDP
-                # connection is therefore the reliable point to approve that
-                # exact dialog for the dedicated worker and retry once.
-                recovered_after_allow = False
-                allow_retry_exc: Exception | None = None
-                if (
-                    self.config.auto_allow_remote_debugging
-                    and self.config.cdp_url.strip().casefold() == "auto"
-                    and self.config.launch_if_missing
-                ):
-                    worker_pids = self._worker_edge_pids()
-                    if self._auto_allow_remote_debugging_prompt(
-                        worker_pids,
-                        timeout=3.0,
-                    ):
-                        endpoint = self._resolved_cdp_url()
-                        playwright = await async_playwright().start()
-                        try:
-                            browser = await self._connect_over_cdp_with_auto_allow(
-                                playwright,
-                                endpoint,
-                                connect_timeout,
-                            )
-                            recovered_after_allow = True
-                            self.audit.record(
-                                "dom_browser_connected_after_auto_allow",
-                                resolved_cdp_url=endpoint,
-                            )
-                        except Exception as retry_after_allow_exc:
-                            allow_retry_exc = retry_after_allow_exc
-                            try:
-                                await playwright.stop()
-                            except Exception:
-                                pass
+    def _register_page_resource(self,page,key):
+        sessions=getattr(self,'resource_sessions',None)
+        ref=self._tab_ref_for_page(page)
+        if sessions is not None:
+            sessions.bind(key[1],'dom_tab_ref',ref)
+            def release(_page=None):
+                with sessions.db() as db:
+                    for handle, in db.execute("SELECT id FROM handles WHERE session=? AND kind='dom_tab_ref' AND value=?",(key[1],json.dumps(ref,sort_keys=True))).fetchall():sessions.remember_retired(db,key[1],handle,'tab_closed')
+                    db.execute("UPDATE handles SET kind='dom_closed_tab_ref' WHERE session=? AND kind='dom_tab_ref' AND value=?",(key[1],json.dumps(ref,sort_keys=True)))
+                    for handle,value in db.execute("SELECT id,value FROM handles WHERE session=? AND kind='dom_element_ref'",(key[1],)).fetchall():
+                        try:belongs=self._decode(json.loads(value),'element').get('tab_ref')==ref
+                        except (ValueError,TypeError):belongs=False
+                        if belongs:
+                            sessions.remember_retired(db,key[1],handle,'tab_closed');db.execute('DELETE FROM handles WHERE id=?',(handle,))
+            page.on('close',release)
 
-                if not recovered_after_allow:
-                    effective_exc = allow_retry_exc or exc
-                    message = str(effective_exc).casefold()
-                    connection_failure = (
-                        "connect" in message
-                        or "econnrefused" in message
-                        or "timeout" in message
-                        or "websocket" in message
-                    )
-                    can_relaunch = (
-                        connection_failure
-                        and self.config.cdp_url.strip().casefold() == "auto"
-                        and self.config.launch_if_missing
-                    )
-                    if can_relaunch:
-                        await self._launch_dedicated_edge()
-                        endpoint = self._resolved_cdp_url()
-                        playwright = await async_playwright().start()
-                        try:
-                            browser = await self._connect_over_cdp_with_auto_allow(
-                                playwright,
-                                endpoint,
-                                connect_timeout,
-                            )
-                        except Exception as retry_exc:
-                            try:
-                                await playwright.stop()
-                            except Exception:
-                                pass
-                            raise RuntimeError(
-                                "Cannot connect to the dedicated worker Edge CDP "
-                                "after an automatic relaunch."
-                            ) from retry_exc
-                    elif connection_failure:
-                        raise RuntimeError(
-                            f"Cannot connect to Edge CDP using {self.config.cdp_url}. "
-                            "Enable remote debugging for this Edge browser instance, then retry."
-                        ) from effective_exc
-                    else:
-                        raise effective_exc
+    async def browser_sessions(self,cdp_urls=None):
+        self._require_read()
+        if not self.config.visible_browser:raise PermissionError('Desktop browser policy disabled')
+        from ..dom_attachment import discover_owned
+        from ..tool_policy import principal_context
+        principal=principal_context.get()
+        key=(principal.owner,principal.session) if principal else ('default','default')
+        return await discover_owned(['http://127.0.0.1:9222','http://127.0.0.1:9223'] if cdp_urls is None else cdp_urls,
+                                    self._external_sessions,key,self._is_allowed_url)
 
-            self._playwright = playwright
-            self._browser = browser
-            self._connected_endpoint = endpoint
-            browser.on("disconnected", self._on_browser_disconnected)
-            self.audit.record(
-                "dom_browser_connected",
-                backend="playwright_cdp",
-                configured_cdp_url=self.config.cdp_url,
-                resolved_cdp_url=endpoint,
-            )
-            return browser
+    async def attach_browser(self,cdp_url,tab_url=None,tab_id=None):
+        self._require_mutation('allow_navigation','DOM browser attachment')
+        if not self.config.visible_browser:raise PermissionError('Desktop browser access is not enabled by owner policy')
+        if tab_url is not None:self._require_allowed_url(tab_url)
+        if tab_id is not None and (not isinstance(tab_id,str) or not 1<=len(tab_id)<=128):raise ValueError('Bounded tab ID required')
+        if tab_url is None and tab_id is None:raise ValueError('Choose a tab ID or unique URL')
+        from ..dom_attachment import endpoint,SelectedContext,connect_selected
+        from urllib.parse import urlsplit
+        from ..tool_policy import principal_context
+        principal=principal_context.get()
+        if principal is None or principal.session=='default':raise PermissionError('Authenticated Work Session required')
+        key=(principal.owner,principal.session);url=endpoint(cdp_url)
+        if key in self._session_contexts:raise ValueError('Detach the current DOM session first')
+        if any(urlsplit(item['endpoint']).port==urlsplit(url).port for item in self._external_sessions.values()):raise PermissionError('This loopback browser port is already leased to a session')
+        from ..resource_limits import validated
+        if len(self._session_contexts)>=getattr(self,'resource_limits',validated())['max_browser_contexts']:raise PermissionError('RESOURCE_LIMIT: browser context budget reached')
+        from playwright.async_api import async_playwright
+        driver=await async_playwright().start()
+        try:
+            browser=await connect_selected(driver,url,self.config.max_timeout_ms)
+            pages=[]
+            for c in browser.contexts:
+                for p in c.pages:
+                    if p.is_closed() or not self._is_allowed_url(p.url):continue
+                    if tab_url is not None and p.url!=tab_url:continue
+                    if tab_id is not None:
+                        session=await c.new_cdp_session(p)
+                        try:info=await session.send('Target.getTargetInfo')
+                        finally:await session.detach()
+                        if info['targetInfo']['targetId']!=tab_id:continue
+                    pages.append(p)
+            if len(pages)!=1:raise ValueError('Select a unique existing tab URL; duplicate or missing tabs refused')
+            page=pages[0]
+            probe=await page.context.new_cdp_session(page)
+            try:selected_target=(await probe.send('Target.getTargetInfo'))['targetInfo']['targetId']
+            finally:await probe.detach()
+            context=SelectedContext(page.context,page,lambda p:self._register_page_resource(p,key))
+            proc=driver._impl_obj._connection._transport._proc
+            self._external_sessions[key]={'browser':browser,'driver':driver,'context':context,'endpoint':url,'driver_pid':proc.pid,'driver_started':psutil.Process(proc.pid).create_time(),
+                'target_id':selected_target,'attached_at':time.time(),'expected_url':str(page.url)}
+            self._session_contexts[key]=context
+            return {'attached':True,'tab_ref':self._tab_ref_for_page(page),'url':page.url,'mode':'selected_cdp_tab','existing_tabs_closed_on_release':False,'binding':self._binding(page,key)}
+        except BaseException:
+            await driver.stop();raise
+
+    async def recover_browser(self,cdp_url,tab_id,expected_url):
+        # Explicit reattachment only. No action replay or URL navigation.
+        from ..tool_policy import principal_context
+        p=principal_context.get()
+        if p is None or p.session=='default':raise PermissionError('Authenticated Work Session required')
+        key=(p.owner,p.session)
+        if key in self._session_contexts:raise ValueError('Detach the old browser session first; recovery never closes its tabs automatically')
+        result=await self.attach_browser(cdp_url,expected_url,tab_id)
+        return {**result,'recovered':True,'actions_replayed':0,'navigation_performed':False,'references':'fresh'}
+
+    async def resource_inventory(self,owner,session):
+        context=self._session_contexts.get((owner,session))
+        pages=[p for p in context.pages if not p.is_closed()] if context else []
+        tabs=[self._tab_ref_for_page(p) for p in pages]
+        await self._prune_pinned_elements()
+        return {'tab_refs':tabs,'element_pins':[pin for pin,(tab,_,_) in self._pinned_elements.items() if tab in tabs],'state':'observed','browser_started':False}
+
+    def recover_owned_transport(self,owner,session):
+        """Terminate only an identified owned driver/job; never the selected user's browser."""
+        key=(owner,session);external=self._external_sessions.get(key)
+        if external is None and any(k!=key and k not in self._external_sessions for k in self._session_contexts):
+            raise PermissionError('Shared managed browser contains other sessions; restart requires owner review')
+        context=self._session_contexts.get(key)
+        pages=list(context.pages) if context else []
+        if external:
+            pid,started=external.get('driver_pid'),external.get('driver_started')
+            if not pid or started is None:raise ValueError('Driver identity not available')
+            process=psutil.Process(pid)
+            if process.create_time()!=started or process.name().casefold()!='node.exe':raise PermissionError('Driver identity changed')
+            self._observe_intentional_transport_shutdown(external['driver'])
+            process.terminate()  # PID-only: the user's Chromium process is independent.
+            self._external_sessions.pop(key,None)
+        else:
+            job=self._browser_job
+            if job is None:raise ValueError('No owned managed browser job available')
+            self._observe_intentional_transport_shutdown(self._playwright)
+            job.close();self._browser_job=None
+            self._browser=self._playwright=None;self._connect_lock=None;self._connected_endpoint=None
+        self._session_contexts.pop(key,None)
+        refs={self._encode({'type':'tab','id':ident}) for ident,page in self._stable_tabs.items() if page in pages}
+        self._stable_tabs={ident:page for ident,page in self._stable_tabs.items() if page not in pages}
+        for ref in refs:self._snapshots.forget_target(ref)
+        self._pinned_elements={pin:entry for pin,entry in self._pinned_elements.items() if entry[0] not in refs}
+        self._snapshot_frames={pin:entry for pin,entry in self._snapshot_frames.items() if entry[0] not in refs}
+        sessions=getattr(self,'resource_sessions',None)
+        if sessions:
+            with sessions.db() as db:
+                for ref, in db.execute("SELECT id FROM handles WHERE session=? AND kind LIKE 'dom_%'",(session,)).fetchall():sessions.remember_retired(db,session,ref,'lease_expired')
+                db.execute("DELETE FROM handles WHERE session=? AND kind LIKE 'dom_%'",(session,))
+        return {'transport_terminated':True,'user_browser_preserved':True,'actions_replayed':0,'references':'retired'}
+
+    def _observe_intentional_transport_shutdown(self,driver):
+        # Consume only Playwright's owned transport shutdown diagnostic.
+        # Pending action Futures retain their errors and uncertainty.
+        transport=getattr(getattr(getattr(driver,'_impl_obj',None),'_connection',None),'_transport',None)
+        future=getattr(transport,'on_error_future',None)
+        if future is None:return
+        def observed(done):
+            if done.cancelled():return
+            error=done.exception()
+            if error is not None:self.audit.record('dom_owned_transport_shutdown',error_type=type(error).__name__)
+        future.add_done_callback(observed)
 
     def _on_browser_disconnected(self, _browser=None) -> None:
         self._browser = None
         self._connected_endpoint = None
 
-    async def _disconnect_playwright(self) -> None:
-        """Disconnect the Playwright client without closing the user's Edge browser."""
-        playwright = self._playwright
-        self._playwright = None
-        self._browser = None
+    async def _disconnect_playwright(self,include_external=True) -> None:
+        for owner,session in list(self._session_contexts):
+            if include_external or (owner,session) not in self._external_sessions:await self.release_session(owner,session)
+        if not self._external_sessions:await self._prune_pinned_elements(all_nodes=True)
+        browser, playwright = self._browser, self._playwright
+        self._browser = self._playwright = None
+        self._session_contexts = {key:value for key,value in self._session_contexts.items() if key in self._external_sessions}
+        if not self._external_sessions:
+            self._stable_tabs.clear()
+            self._snapshot_frames.clear()
+            self._snapshots.entries.clear()
+            self._lifecycle_pages.clear()
         self._connected_endpoint = None
+        if browser is not None:
+            try: await asyncio.wait_for(browser.close(),timeout=3)
+            except Exception: pass
         if playwright is not None:
-            try:
-                await playwright.stop()
-            except Exception:
-                pass
+            try: await asyncio.wait_for(playwright.stop(),timeout=3)
+            except Exception: pass
+        job, self._browser_job = self._browser_job, None
+        if job is not None: job.close()
 
     async def disconnect(self) -> None:
         """Explicitly disconnect the automation client without closing Edge."""
@@ -292,8 +360,45 @@ class BrowserDOMService:
             await self._disconnect_playwright()
         self.audit.record("dom_browser_disconnected")
 
+    def _binding(self,page,key):
+        external=self._external_sessions.get(key)
+        if external is None:
+            return {'mode':'managed_ephemeral','profile_verified':False,'profile_persistence':'ephemeral'}
+        selected=page is external['context'].selected
+        return {'mode':'selected_cdp_tab','ownership':'selected_existing_tab' if selected else 'owned_child_tab',
+                'target_id':external.get('target_id') if selected else None,
+                'attached_at':external.get('attached_at'),'profile_verified':False,
+                'profile_persistence':'external_browser_managed',
+                'url_changed_since_attach':str(page.url)!=external.get('expected_url') if selected else None,
+                'profile_note':'Browser profile is not inferred from configured worker paths or page account labels'}
+
+    async def page_diagnostics(self,tab_ref):
+        self._require_read()
+        browser=await self._ensure_browser()
+        page=await self._resolve_tab(browser,tab_ref)
+        from ..dom_diagnostics import passive
+        return await passive(page,self._require_allowed_url)
+
+    async def cart_coverage(self,tab_ref,selectors):
+        self._require_read()
+        from ..cart_coverage import validate,inspect
+        validate(selectors)
+        browser=await self._ensure_browser()
+        page=await self._resolve_tab(browser,tab_ref)
+        start=str(page.url)
+        result=await inspect(page,selectors)
+        self._require_allowed_url(str(page.url))
+        if str(page.url)!=start:raise ValueError('Cart target changed during observation; read again before recording coverage')
+        return result
+
     async def list_tabs(self) -> dict:
         self._require_read()
+        from ..tool_policy import principal_context
+        principal=principal_context.get()
+        key=(principal.owner,principal.session) if principal else ('default','default')
+        if key not in self._session_contexts:
+            return {'backend':'dom','connection_mode':'not_selected','tabs':[],'count':0,
+                    'browser_started':False,'next_action':'Attach the intended existing tab or explicitly open with browser_mode=managed'}
         browser = await self._ensure_browser()
         pages = self._pages(browser)
         tabs = []
@@ -307,41 +412,80 @@ class BrowserDOMService:
                     "tab_ref": self._tab_ref_for_page(page),
                     "title": title,
                     "url": url,
+                    "binding": self._binding(page,key),
                 }
             )
 
         self.audit.record("dom_list_tabs", returned=len(tabs))
+        from ..tool_policy import principal_context
+        principal=principal_context.get()
+        key=(principal.owner,principal.session) if principal else ('default','default')
+        selected=key in self._external_sessions
         return {
-            "backend": "playwright_cdp",
-            "connection_mode": "persistent",
+            "backend": "dom",
+            "connection_mode": "selected_cdp_tab" if selected else "managed_ephemeral",
             "cdp_url": self.config.cdp_url,
-            "resolved_cdp_url": self._connected_endpoint or self._resolved_cdp_url(),
-            "user_data_dir": self.config.user_data_dir,
+            "resolved_cdp_url": "selected://local-cdp" if selected else self._connected_endpoint or "disconnected",
+            "user_data_dir": None,
+            "configured_user_data_dir": self.config.user_data_dir,
+            "actual_profile_known": False,
+            "profile_persistence": "external_browser_managed" if selected else "ephemeral",
             "launch_if_missing": self.config.launch_if_missing,
-            "background_mode": self.config.background_mode,
+            "background_mode": "visible" if self.config.visible_browser else "headless",
             "tabs": tabs,
             "count": len(tabs),
         }
+
+    async def guard_mutation(self, method):
+        """Pause this principal's session on blockers, without navigation or replay."""
+        if method not in {'navigate','click','set_value','select','toggle','scroll','scroll_into_view','history'}:return
+        from ..tool_policy import principal_context
+        from ..dom_content_state import classify
+        from ..automation_errors import DOMHumanActionRequired
+        principal=principal_context.get()
+        key=(principal.owner,principal.session) if principal else ('default','default')
+        context=self._session_contexts.get(key)
+        if context is None:return
+        for page in context.pages:
+            if page.is_closed():continue
+            state=classify('', '', page.url)
+            if state['human_action_required']:raise DOMHumanActionRequired(state['state'])
+            try:
+                body=await page.locator('xpath=/html/body').inner_text(timeout=2000)
+            except Exception:
+                raise DOMHumanActionRequired('observation_unavailable') from None
+            state=classify('',body[:2000],page.url)
+            if state['human_action_required']:raise DOMHumanActionRequired(state['state'])
 
     async def open_tab(
         self,
         url: str,
         timeout_ms: int | None = None,
+        browser_mode: str = 'current',
     ) -> dict:
         self._require_mutation("allow_navigation", "DOM navigation")
         self._require_allowed_url(url)
         timeout = self._timeout(timeout_ms)
-        browser = await self._ensure_browser()
+        if browser_mode not in {'current','managed'}:raise ValueError('browser_mode must be current or managed')
+        if browser_mode=='managed':
+            from ..tool_policy import principal_context
+            p=principal_context.get()
+            if p and (p.owner,p.session) in self._external_sessions:
+                raise ValueError('Selected external browser is active; detach explicitly before choosing a managed browser')
+        browser = await self._ensure_browser(allow_managed_start=browser_mode=='managed')
         if not browser.contexts:
             raise RuntimeError("Connected Edge browser has no available browser context.")
 
+        from ..resource_limits import validated
+        if len(browser.contexts[0].pages)>=getattr(self,'resource_limits',validated())['max_tabs_per_session']:
+            raise PermissionError('RESOURCE_LIMIT: tab budget reached')
         page = await browser.contexts[0].new_page()
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             self._require_allowed_url(str(page.url or ""))
         except Exception:
             try:
-                await page.close()
+                await asyncio.wait_for(page.close(),timeout=3)
             except Exception:
                 pass
             raise
@@ -361,12 +505,15 @@ class BrowserDOMService:
         tab_ref: str,
         url: str,
         timeout_ms: int | None = None,
+        verification: dict | None = None,
     ) -> dict:
         self._require_mutation("allow_navigation", "DOM navigation")
         self._require_allowed_url(url)
         timeout = self._timeout(timeout_ms)
         browser = await self._ensure_browser()
         page = await self._resolve_tab(browser, tab_ref)
+        from .dom_verification import validate_click,click_result
+        await validate_click(page,None,verification)
         await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
         self._require_allowed_url(str(page.url or ""))
         stable_ref = self._tab_ref_for_page(page)
@@ -381,64 +528,51 @@ class BrowserDOMService:
             "title": title,
             "url": str(page.url or ""),
             "navigated": True,
+            "verification":await click_result(page,None,None,'',allowed=self._is_allowed_url,verification=verification or {'url_equals':str(page.url),'wait_for_match':True}),
         }
 
     async def close_tab(self, tab_ref: str) -> dict:
+        from ..automation_errors import ReferenceUnavailable
         self._require_mutation("allow_navigation", "DOM tab close")
         browser = await self._ensure_browser()
-        page = await self._resolve_tab(browser, tab_ref)
+        try:page = await self._resolve_tab(browser, tab_ref,allow_blocked_url=True)
+        except (LookupError,ReferenceUnavailable):
+            await self._prune_pinned_elements(tab_ref=tab_ref)
+            return {'tab_ref':tab_ref,'closed':True,'already_closed':True}
         stable_id = None
         try:
             token = self._decode(tab_ref, expected_type="tab")
             stable_id = token.get("id")
         except Exception:
             pass
-        await page.close()
+        await asyncio.wait_for(page.close(),timeout=3)
+        await self._prune_pinned_elements(tab_ref=tab_ref)
         if stable_id is not None:
             self._stable_tabs.pop(str(stable_id), None)
         else:
             for key, candidate in list(self._stable_tabs.items()):
                 if candidate is page:
                     self._stable_tabs.pop(key, None)
+        if not browser.contexts[0].pages:
+            from ..tool_policy import principal_context
+            principal=principal_context.get()
+            await self.release_session(principal.owner,principal.session)
         self.audit.record("dom_close_tab", tab_ref=tab_ref)
         return {"tab_ref": tab_ref, "closed": True}
 
     async def peek_tabs(self) -> dict:
-        """Inspect the current worker browser without auto-launching it."""
         self._require_read()
-        running_pids = self._worker_edge_pids()
-        browser = self._browser
-        connected = False
-        if browser is not None:
-            try:
-                connected = bool(browser.is_connected())
-            except Exception:
-                connected = False
-
+        from ..tool_policy import principal_context
+        principal = principal_context.get()
+        contexts = getattr(self, "_session_contexts", {})
+        context = contexts.get((principal.owner, principal.session)) if principal else None
         tabs = []
-        if connected:
-            for page in self._pages(browser):
-                url = str(page.url or "")
-                if not self._is_allowed_url(url):
-                    continue
-                tabs.append(
-                    {
-                        "tab_ref": self._tab_ref_for_page(page),
-                        "title": await self._safe_title(page),
-                        "url": url,
-                    }
-                )
-
-        return {
-            "backend": "playwright_cdp",
-            "running": bool(running_pids),
-            "worker_edge_pids": running_pids,
-            "connected": connected,
-            "tabs": tabs,
-            "count": len(tabs),
-            "launch_if_missing": self.config.launch_if_missing,
-            "background_mode": self.config.background_mode,
-        }
+        for page in context.pages if context else []:
+            if self._is_allowed_url(str(page.url or "")):
+                tabs.append({"tab_ref": self._tab_ref_for_page(page),
+                             "url": page.url, "title": await self._safe_title(page)})
+        return {"backend": "dom", "background_only": not self.config.visible_browser, "tabs": tabs,
+                "count": len(tabs), "connected": context is not None}
 
     async def ensure_tab_pool(
         self,
@@ -599,6 +733,7 @@ class BrowserDOMService:
         name: str | None = None,
         exact: bool = False,
         max_items: int = 20,
+        frame_ref: str | None = None,
     ) -> dict:
         self._require_read()
         strategy_count = sum(bool(x) for x in (selector, text, role))
@@ -610,8 +745,9 @@ class BrowserDOMService:
         limit = min(max(1, int(max_items)), self.config.max_items)
         browser = await self._ensure_browser()
         page = await self._resolve_tab(browser, tab_ref)
+        target = self._resolve_snapshot_frame(page, tab_ref, frame_ref) if frame_ref else page
         base, descriptor = self._base_locator(
-            page,
+            target,
             selector=selector,
             text=text,
             role=role,
@@ -623,22 +759,26 @@ class BrowserDOMService:
         matches = []
         for index in range(returned):
             locator = base.nth(index)
-            element_ref = self._encode(
-                {
-                    "type": "element",
-                    "tab_ref": tab_ref,
-                    "strategy": descriptor,
-                    "index": index,
-                }
-            )
             try:
-                meta = await self._element_metadata(locator)
+                await self._prune_pinned_elements()
+                if len(self._pinned_elements) >= 1000:
+                    raise PermissionError('RESOURCE_LIMIT: pinned DOM reference budget reached')
+                handle = await locator.element_handle(timeout=self.config.default_timeout_ms)
+                if handle is None:
+                    raise LookupError('DOM node disappeared during find')
+                from .pinned_dom import PinnedNode
+                meta = await self._element_metadata(PinnedNode(handle))
+                owner_frame = await handle.owner_frame()
+                if owner_frame is None: raise LookupError('DOM frame detached during find')
+                self._require_allowed_url(str(owner_frame.url or ''))
+                pin = uuid4().hex
+                self._pinned_elements[pin] = (tab_ref, handle, time.monotonic()+300)
+                element_ref = self._encode({'type':'element', 'tab_ref':tab_ref, 'pin':pin})
                 meta["element_ref"] = element_ref
                 matches.append(meta)
             except Exception as exc:
                 matches.append(
                     {
-                        "element_ref": element_ref,
                         "error": f"Element changed while being inspected: {exc}",
                     }
                 )
@@ -661,12 +801,132 @@ class BrowserDOMService:
             "truncated": count > len(matches),
         }
 
+    async def snapshot(self, tab_ref: str, max_items: int = 100,
+                       max_depth: int = 12, include_hidden: bool = False,
+                       include_frames: bool = False, include_shadow: bool = False, root_selector: str | None = None) -> dict:
+        """Inspect the owned main document; obtain action refs separately via find()."""
+        self._require_read()
+        if max_items < 1 or max_depth < 0:
+            raise ValueError("max_items must be positive and max_depth nonnegative")
+        if root_selector is not None:
+            if not isinstance(root_selector,str) or not root_selector or len(root_selector)>512:
+                raise ValueError('root_selector must contain 1..512 characters')
+            if include_frames:raise ValueError('A scoped root cannot include child frames')
+        limit = min(int(max_items), self.config.max_items)
+        depth = min(int(max_depth), 32)
+        browser = await self._ensure_browser()
+        page = await self._resolve_tab(browser, tab_ref)
+        if root_selector is not None:
+            exists=await page.evaluate("selector=>{try{return !!document.querySelector(selector)}catch{return null}}",root_selector)
+            if exists is None:raise ValueError('Invalid root CSS selector')
+            if not exists:raise LookupError('Snapshot root is unavailable')
+        from .semantic_snapshot import DOM_SNAPSHOT_SCRIPT
+        result = await page.evaluate(DOM_SNAPSHOT_SCRIPT, {
+            "limit": limit, "maxDepth": depth,
+            "textLimit": min(self.config.max_text_chars, 32768),
+            "includeHidden": bool(include_hidden),
+            "includeShadow": bool(include_shadow),
+            "rootSelector": root_selector,
+        })
+        # Recheck after inspection if a navigation raced with this request.
+        self._require_allowed_url(str(page.url or ""))
+        for node in result['nodes']: node['frame_index'] = 0
+        documents = [{'frame_index':0,'frame_ref':None}]
+        if include_frames:
+            for ordinal, frame in enumerate(page.frames[1:17], 1):
+                remaining = limit-result['scanned']
+                if remaining <= 0:
+                    result['truncated'] = True
+                    result['truncation_reasons'].append('scan_limit')
+                    break
+                if not self._is_allowed_url(str(frame.url or '')):
+                    documents.append({'frame_index':ordinal,'state':'blocked_host'})
+                    continue
+                try:
+                    part = await frame.evaluate(DOM_SNAPSHOT_SCRIPT, {
+                        'limit':remaining,'maxDepth':depth,
+                        'textLimit':max(0,min(self.config.max_text_chars,32768)-result['text_chars']),
+                        'includeHidden':bool(include_hidden),'includeShadow':bool(include_shadow)})
+                    self._require_allowed_url(str(frame.url or ''))
+                except Exception:
+                    documents.append({'frame_index':ordinal,'state':'changed_or_unavailable'})
+                    continue
+                frame_ref = self._snapshot_frame_ref(tab_ref, frame)
+                documents.append({'frame_index':ordinal,'frame_ref':frame_ref,'state':'read'})
+                offset = len(result['nodes'])
+                for node in part['nodes']:
+                    node['index'] += offset
+                    if node['parent_index'] is not None: node['parent_index'] += offset
+                    node['frame_index'] = ordinal
+                result['nodes'].extend(part['nodes'])
+                for field in ('scanned','returned','text_chars','omitted_open_shadow_roots'):
+                    result[field] += part[field]
+                result['truncated'] |= part['truncated']
+                result['truncation_reasons'].extend(part['truncation_reasons'])
+            if len(page.frames)>17:
+                result['truncated']=True
+                result['truncation_reasons'].append('frame_limit')
+        result['documents'] = documents
+        if include_frames:
+            result['omitted_frames'] = max(0, len(page.frames)-1-sum(d.get('state')=='read' for d in documents))
+        result['scope'] = 'allowed_frames' if include_frames else 'main_document'
+        result['include_open_shadow'] = bool(include_shadow)
+        result['truncation_reasons'] = sorted(set(result['truncation_reasons']))
+        result.update(backend="headless_dom", tab_ref=tab_ref,
+                      values_included=False,
+                      limits={"max_scanned": limit, "max_depth": depth},
+                      action_reference_hint="Use dom_find with role/name or CSS for current element_refs.")
+        self.audit.record("dom_snapshot", returned=result["returned"],
+                          scanned=result["scanned"], truncated=result["truncated"])
+        from ..snapshot_cache import owner_scope
+        result['capture_options']={'include_hidden':bool(include_hidden),'include_frames':bool(include_frames),'include_shadow':bool(include_shadow),'root_selector':root_selector}
+        result['snapshot_ref']=self._snapshots.store(owner_scope(tab_ref),result)
+        return result
+
+    def _snapshot_frame_ref(self, tab_ref, frame):
+        for key, (tab, candidate) in list(self._snapshot_frames.items()):
+            if candidate.is_detached(): self._snapshot_frames.pop(key, None)
+            elif tab == tab_ref and candidate is frame:
+                return self._encode({'type':'frame','tab_ref':tab_ref,'id':key})
+        if len(self._snapshot_frames)>=512:
+            raise PermissionError('RESOURCE_LIMIT: frame reference budget reached')
+        key = uuid4().hex
+        self._snapshot_frames[key] = (tab_ref, frame)
+        return self._encode({'type':'frame','tab_ref':tab_ref,'id':key})
+
+    async def accessibility_snapshot(self, tab_ref: str, max_items: int = 100,
+                                     max_depth: int = 12, include_frames: bool = False) -> dict:
+        self._require_read()
+        if max_items < 1 or max_depth < 0:
+            raise ValueError('Invalid accessibility capture limits')
+        browser = await self._ensure_browser()
+        page = await self._resolve_tab(browser, tab_ref)
+        from .browser_accessibility import bounded_capture
+        result = await bounded_capture(self, page, min(int(max_items),self.config.max_items),
+                                       min(int(max_depth),32), bool(include_frames))
+        result['tab_ref'] = tab_ref
+        self.audit.record('dom_accessibility_snapshot', returned=result['returned'],
+                          scanned=result['scanned'],truncated=result['truncated'])
+        return result
+
+    def _resolve_snapshot_frame(self, page, tab_ref, frame_ref):
+        token = self._decode(frame_ref, 'frame')
+        entry = self._snapshot_frames.get(token.get('id'))
+        if not entry or token.get('tab_ref') != tab_ref or entry[0] != tab_ref:
+            raise PermissionError('Frame belongs to another tab or session')
+        frame = entry[1]
+        if frame.is_detached() or frame not in page.frames:
+            raise LookupError('STALE_DOM_REF: frame detached')
+        self._require_allowed_url(str(frame.url or ''))
+        return frame
+
     async def details(self, element_ref: str) -> dict:
         self._require_read()
         browser = await self._ensure_browser()
         _page, locator = await self._resolve_element(browser, element_ref)
         result = await self._element_metadata(locator, include_attributes=True)
         result["element_ref"] = element_ref
+        result["tab_ref"] = self._tab_ref_for_page(_page)
 
         self.audit.record("dom_details", element_ref=element_ref)
         return result
@@ -695,45 +955,118 @@ class BrowserDOMService:
         )
         return result
 
-    async def click(self, element_ref: str, timeout_ms: int | None = None) -> dict:
+    async def click(self, element_ref: str, timeout_ms: int | None = None, expected_selector: str | None = None, verification: dict | None = None, precondition: dict | None = None, popup_timeout_ms: int = 0, cart_identity=None) -> dict:
+        if type(popup_timeout_ms) is not int or not 0<=popup_timeout_ms<=3000:
+            from .dom_verification import DOMValidationError
+            raise DOMValidationError('popup_timeout_ms requires 0..3000')
         self._require_mutation("allow_click", "DOM click")
+        from .dom_preconditions import validate,check
+        validate(precondition)
+        from .dom_verification import options
+        options(verification)
+        if expected_selector is not None and verification and verification.get('selector'):raise ValueError('Provide one selector condition')
+        if expected_selector is not None and (not isinstance(expected_selector,str) or not expected_selector or len(expected_selector)>512):
+            raise ValueError('expected_selector must contain 1..512 characters')
         timeout = self._timeout(timeout_ms)
         browser = await self._ensure_browser()
         _page, locator = await self._resolve_element(browser, element_ref)
-        if self.config.background_safe_events:
-            await locator.wait_for(state="attached", timeout=timeout)
-            await locator.evaluate(
-                """(el) => {
-                    if (el.disabled) throw new Error('Element is disabled.');
-                    if (typeof el.click !== 'function') {
-                        throw new Error('Element does not expose click().');
+        from urllib.parse import urlsplit
+        if urlsplit(_page.url).hostname in {'shopee.vn','www.shopee.vn','m.shopee.vn'}:
+            label=await locator.evaluate("el => {const b=el.closest('button')||el;return (b.innerText||'')+' '+(b.getAttribute('aria-label')||'')}")
+            from ..cart_checkpoint import check_action
+            if check_action(_page.url,label,cart_identity):
+                from ..automation_errors import CartCheckpointRequired
+                quantity=_page.locator("input[role='spinbutton'], input.shopee-input-quantity__input")
+                if await quantity.count()!=1:raise CartCheckpointRequired('Cannot uniquely observe product quantity')
+                if await quantity.input_value()!=str(cart_identity.delta):raise CartCheckpointRequired('Product quantity differs from reserved delta')
+        from .dom_verification import validate_click
+        condition_scope = await locator.owner_frame()
+        if condition_scope is None:raise LookupError('Verification frame detached')
+        self._require_allowed_url(str(condition_scope.url or ''))
+        await validate_click(condition_scope, expected_selector, verification)
+        await check(locator,precondition)
+        await self._check_modal_access(locator)
+        action_context=browser.contexts[0]
+        previous_pages=set(action_context.pages)
+        from .dom_verification import state,click_result
+        before=await state(locator)
+        before_url=_page.url
+        from .popup_tracker import PopupTracker
+        tracker=PopupTracker(action_context)
+        try:
+            if precondition is not None:
+                # A trusted click can auto-wait after the first condition check.
+                # Trial checks actionability without dispatch; the final condition
+                # and semantic click share one JS task on the same pinned node.
+                if not self.config.background_safe_events:await locator.click(trial=True,timeout=timeout)
+                from .dom_guarded_click import dispatch
+                await dispatch(locator,precondition)
+                click_mode='guarded_dom_event'
+            elif self.config.background_safe_events:
+                await locator.wait_for(state="attached", timeout=timeout)
+                await locator.evaluate(
+                    """(el) => {
+                        if (el.disabled) throw new Error('Element is disabled.');
+                        const modal=el.ownerDocument.querySelector('dialog:modal');
+                    let inside=!modal;
+                    for(let n=el;n;n=n.assignedSlot||n.parentElement||n.getRootNode().host||null){
+                        if(n.hasAttribute('inert')) throw new Error('Element is inert.');
+                        if(n===modal)inside=true;
                     }
-                    el.click();
-                    return true;
-                }"""
+                    if(!inside) throw new Error('Modal blocks this element.');
+                        if (typeof el.click !== 'function') {
+                            throw new Error('Element does not expose click().');
+                        }
+                        el.click();
+                        return true;
+                    }"""
+                )
+                click_mode = "dom_event"
+            else:
+                await locator.click(timeout=timeout)
+                click_mode = "trusted_playwright"
+            self.audit.record(
+                "dom_click",
+                element_ref=element_ref,
+                click_mode=click_mode,
             )
-            click_mode = "dom_event"
-        else:
-            await locator.click(timeout=timeout)
-            click_mode = "trusted_playwright"
-        self.audit.record(
-            "dom_click",
-            element_ref=element_ref,
-            click_mode=click_mode,
-        )
-        return {
-            "element_ref": element_ref,
-            "clicked": True,
-            "click_mode": click_mode,
-        }
+            observed=await click_result(_page,locator,before,before_url,expected_selector,allowed=self._is_allowed_url,verification=verification,condition_scope=condition_scope)
+            await tracker.wait(popup_timeout_ms)
+            created=[];blocked=0
+            budget=(getattr(self,'resource_limits',None) or {}).get('max_tabs_per_session',8)
+            for popup in list(set(action_context.pages)|set(tracker.pages)):
+                if popup in previous_pages:continue
+                if popup.url in ('','about:blank'):
+                    try:await popup.wait_for_url(lambda url:str(url) not in ('','about:blank'),timeout=min(timeout,1000))
+                    except Exception:pass
+                try:await popup.wait_for_load_state('domcontentloaded',timeout=min(timeout,1000))
+                except Exception:pass
+                if not self._is_allowed_url(popup.url) or len(previous_pages)+len(created)>=budget:
+                    await popup.close();blocked+=1;continue
+                created.append({'tab_ref':self._tab_ref_for_page(popup),'url':popup.url,'title':await self._safe_title(popup)})
+            return {
+                "element_ref": element_ref,
+                "clicked": True,
+                "verification": observed,
+                "created_tabs":created,"blocked_created_tabs":blocked,"popup_observation_ms":popup_timeout_ms,
+                "click_mode": click_mode,
+            }
+        finally:tracker.close()
 
     async def set_value(
         self,
         element_ref: str,
         value: str,
         timeout_ms: int | None = None,
+        verification: dict | None = None,
+        precondition: dict | None = None,
     ) -> dict:
         self._require_mutation("allow_set_value", "DOM set value")
+        from .dom_preconditions import validate,check
+        validate(precondition)
+        from .dom_verification import options
+        options(verification)
+        if verification and set(verification)&{'selector','state','text_contains','url_equals','url_contains'}:raise ValueError('Form verification checks the requested value; selector conditions require dom_click')
         if len(value) > self.config.max_text_chars:
             raise ValueError(
                 f"value exceeds browser_dom.max_text_chars ({self.config.max_text_chars})."
@@ -741,8 +1074,14 @@ class BrowserDOMService:
         timeout = self._timeout(timeout_ms)
         browser = await self._ensure_browser()
         _page, locator = await self._resolve_element(browser, element_ref)
+        await check(locator,precondition)
+        await self._check_modal_access(locator)
 
-        if self.config.background_safe_events:
+        if precondition is not None:
+            from .dom_guarded_form import dispatch
+            await dispatch(locator,'set_value',precondition,timeout,value=value)
+            set_mode='guarded_dom_event'
+        elif self.config.background_safe_events:
             await locator.wait_for(state="attached", timeout=timeout)
             result = await locator.evaluate(
                 """(el, value) => {
@@ -840,6 +1179,7 @@ class BrowserDOMService:
         return {
             "element_ref": element_ref,
             "set": True,
+            "verification": await value_result(locator,value,verification),
             "value_chars": len(value),
             "set_mode": set_mode,
         }
@@ -851,42 +1191,64 @@ class BrowserDOMService:
         value: str | None = None,
         label: str | None = None,
         timeout_ms: int | None = None,
+        verification: dict | None = None,
+        precondition: dict | None = None,
     ) -> dict:
         self._require_mutation("allow_select", "DOM select")
+        from .dom_preconditions import validate,check
+        validate(precondition)
+        from .dom_verification import options
+        options(verification)
+        if verification and set(verification)&{'selector','state','text_contains','url_equals','url_contains'}:raise ValueError('Form verification checks the requested value; selector conditions require dom_click')
         if (value is None) == (label is None):
             raise ValueError("Provide exactly one of value or label.")
         timeout = self._timeout(timeout_ms)
         browser = await self._ensure_browser()
         _page, locator = await self._resolve_element(browser, element_ref)
-        selected = await locator.select_option(
-            value=value if value is not None else None,
-            label=label if label is not None else None,
-            timeout=timeout,
-        )
+        await check(locator,precondition)
+        await self._check_modal_access(locator)
+        if precondition is not None:
+            from .dom_guarded_form import dispatch
+            selected=(await dispatch(locator,'select',precondition,timeout,value=value,label=label))['selected']
+        else:
+            selected = await locator.select_option(value=value,label=label,timeout=timeout)
         self.audit.record(
             "dom_select",
             element_ref=element_ref,
             selection_kind="value" if value is not None else "label",
         )
-        return {"element_ref": element_ref, "selected": selected}
+        from .dom_verification import selection_result
+        return {"element_ref": element_ref, "selected": selected,"verification":await selection_result(locator,selected,verification)}
 
     async def toggle(
         self,
         element_ref: str,
         checked: bool | None = None,
         timeout_ms: int | None = None,
+        verification: dict | None = None,
+        precondition: dict | None = None,
     ) -> dict:
         self._require_mutation("allow_toggle", "DOM toggle")
+        from .dom_preconditions import validate,check
+        validate(precondition)
+        from .dom_verification import options
+        options(verification)
+        if verification and set(verification)&{'selector','state','text_contains','url_equals','url_contains'}:raise ValueError('Form verification checks the requested value; selector conditions require dom_click')
         timeout = self._timeout(timeout_ms)
         browser = await self._ensure_browser()
         _page, locator = await self._resolve_element(browser, element_ref)
-        before = bool(await locator.is_checked(timeout=timeout))
-        target = (not before) if checked is None else bool(checked)
-        if target:
-            await locator.check(timeout=timeout)
+        await check(locator,precondition)
+        await self._check_modal_access(locator)
+        if precondition is not None:
+            from .dom_guarded_form import dispatch
+            result=await dispatch(locator,'toggle',precondition,timeout,checked=checked)
+            before,target,after=result['before'],result['requested'],result['after']
         else:
-            await locator.uncheck(timeout=timeout)
-        after = bool(await locator.is_checked(timeout=timeout))
+            before = bool(await asyncio.wait_for(locator.is_checked(), timeout=timeout / 1000))
+            target = (not before) if checked is None else bool(checked)
+            if target:await locator.check(timeout=timeout)
+            else:await locator.uncheck(timeout=timeout)
+            after = bool(await asyncio.wait_for(locator.is_checked(), timeout=timeout / 1000))
         self.audit.record(
             "dom_toggle",
             element_ref=element_ref,
@@ -898,6 +1260,7 @@ class BrowserDOMService:
             "before": before,
             "after": after,
             "requested": target,
+            "verification": await checked_result(locator,target,verification),
         }
 
     async def scroll_into_view(
@@ -1003,6 +1366,21 @@ class BrowserDOMService:
         return pages
 
     def _tab_ref_for_page(self, page) -> str:
+        if page not in self._lifecycle_pages:
+            self._lifecycle_pages.add(page)
+            def closed(_page=None):
+                self._lifecycle_pages.discard(page)
+                refs=[self._encode({'type':'tab','id':key}) for key,value in self._stable_tabs.items() if value is page]
+                async def cleanup():
+                    for ref in refs:
+                        await self._prune_pinned_elements(tab_ref=ref)
+                        self._snapshots.forget_target(ref)
+                        for key,(tab,_) in list(self._snapshot_frames.items()):
+                            if tab==ref:self._snapshot_frames.pop(key,None)
+                    for key,value in list(self._stable_tabs.items()):
+                        if value is page:self._stable_tabs.pop(key,None)
+                asyncio.create_task(cleanup())
+            page.on('close',closed)
         for stable_id, candidate in list(self._stable_tabs.items()):
             try:
                 if candidate is page and not candidate.is_closed():
@@ -1016,26 +1394,20 @@ class BrowserDOMService:
         self._stable_tabs[stable_id] = page
         return self._encode({"type": "tab", "id": stable_id})
 
-    async def _resolve_tab(self, browser, tab_ref: str):
+    async def _resolve_tab(self, browser, tab_ref: str,allow_blocked_url=False):
         token = self._decode(tab_ref, expected_type="tab")
         stable_id = token.get("id")
         if stable_id is not None:
             page = self._stable_tabs.get(str(stable_id))
             if page is None:
-                raise LookupError(
-                    "The referenced Edge tab is no longer available. Call dom_list_tabs again."
-                )
-            try:
-                if page.is_closed():
-                    self._stable_tabs.pop(str(stable_id), None)
-                    raise LookupError(
-                        "The referenced Edge tab is no longer available. Call dom_list_tabs again."
-                    )
-            except LookupError:
-                raise
-            except Exception as exc:
-                raise LookupError("The referenced Edge tab is no longer available.") from exc
-            self._require_allowed_url(str(page.url or ""))
+                from ..automation_errors import ReferenceUnavailable
+                raise ReferenceUnavailable('tab_closed')
+            if page.is_closed():
+                self._stable_tabs.pop(str(stable_id), None)
+                from ..automation_errors import ReferenceUnavailable
+                raise ReferenceUnavailable('tab_closed')
+            if page not in self._pages(browser):raise PermissionError("Tab belongs to another session context")
+            if not allow_blocked_url:self._require_allowed_url(str(page.url or ""))
             return page
 
         pages = self._pages(browser)
@@ -1097,27 +1469,80 @@ class BrowserDOMService:
         token = self._decode(element_ref, expected_type="element")
         tab_ref = str(token.get("tab_ref", ""))
         page = await self._resolve_tab(browser, tab_ref)
-        descriptor = token.get("strategy")
-        if not isinstance(descriptor, dict):
-            raise ValueError("Invalid DOM element reference.")
-        kind = str(descriptor.get("kind", ""))
-        query = str(descriptor.get("query", ""))
-        exact = bool(descriptor.get("exact", False))
+        await self._prune_pinned_elements()
+        pin = token.get('pin')
+        if not pin:
+            raise LookupError('STALE_DOM_REF: legacy locator reference; run dom_find again')
+        entry = self._pinned_elements.get(str(pin))
+        if entry is None or entry[0] != tab_ref:
+            from ..automation_errors import ReferenceUnavailable
+            raise ReferenceUnavailable(self._retired_pins.get(str(pin),('node_expired',0))[0])
+        try:
+            owner_frame = await entry[1].owner_frame()
+            if owner_frame is None: raise LookupError('Detached frame')
+            self._require_allowed_url(str(owner_frame.url or ''))
+            connected = await entry[1].evaluate('(el) => el.isConnected && el.ownerDocument.defaultView !== null')
+        except PermissionError:
+            raise
+        except Exception:
+            connected = False
+        if not connected:
+            self._pinned_elements.pop(str(pin), None)
+            try: await asyncio.wait_for(entry[1].dispose(),timeout=1)
+            except Exception: pass
+            self._retired_pins[str(pin)]=('node_replaced',time.monotonic())
+            from ..automation_errors import ReferenceUnavailable
+            raise ReferenceUnavailable('node_replaced')
+        from .pinned_dom import PinnedNode
+        return page, PinnedNode(entry[1])
 
-        if kind == "selector":
-            locator = page.locator(query)
-        elif kind == "text":
-            locator = page.get_by_text(query, exact=exact)
-        elif kind == "role":
-            kwargs = {"exact": exact}
-            if descriptor.get("name") is not None:
-                kwargs["name"] = str(descriptor["name"])
-            locator = page.get_by_role(query, **kwargs)
-        else:
-            raise ValueError("Unsupported DOM element reference strategy.")
+    async def _prune_pinned_elements(self, all_nodes=False, tab_ref=None):
+        now = time.monotonic()
+        self._retired_pins={pin:value for pin,value in self._retired_pins.items() if now-value[1]<600}
+        for pin, (tab, handle, expires) in list(self._pinned_elements.items()):
+            if all_nodes or expires <= now or (tab_ref is not None and tab == tab_ref):
+                self._pinned_elements.pop(pin, None)
+                self._retired_pins[pin]=('node_expired' if expires<=now else 'node_replaced',now)
+                while len(self._retired_pins)>1000:self._retired_pins.pop(next(iter(self._retired_pins)))
+                try: await asyncio.wait_for(handle.dispose(),timeout=1)
+                except Exception: pass
+        for pin,(tab,frame) in list(self._snapshot_frames.items()):
+            if all_nodes or frame.is_detached() or (tab_ref is not None and tab==tab_ref):
+                self._snapshot_frames.pop(pin,None)
 
-        index = int(token.get("index", 0))
-        return page, locator.nth(index)
+    async def snapshot_diff(self,tab_ref,previous_snapshot_ref,max_items=100,max_depth=12,
+                            include_hidden=False,include_frames=False,include_shadow=False,root_selector=None,compact=False,max_changes=100):
+        from ..snapshot_cache import owner_scope
+        scope=owner_scope(tab_ref)
+        self._snapshots.get(previous_snapshot_ref,scope)
+        current=await self.snapshot(tab_ref,max_items,max_depth,include_hidden,include_frames,include_shadow,root_selector)
+        return self._snapshots.diff(previous_snapshot_ref,current['snapshot_ref'],scope,compact=compact,max_changes=max_changes)
+
+    async def _check_modal_access(self,locator):
+        blocked=await locator.evaluate("el=>{const m=el.ownerDocument.querySelector('dialog:modal');let inside=!m;for(let n=el;n;n=n.assignedSlot||n.parentElement||n.getRootNode().host||null){if(n.hasAttribute('inert'))return true;if(n===m)inside=true;}return !!el.disabled||!inside;}")
+        if blocked:
+            from .dom_preconditions import DOMPreconditionError
+            raise DOMPreconditionError('Element disabled, inert or blocked by a modal')
+
+    async def release_session(self,owner,session):
+        cleanup_pending=False
+        context=self._session_contexts.pop((owner,session),None)
+        external=self._external_sessions.pop((owner,session),None)
+        if context is not None:
+            pages=list(context.pages)
+            refs=[self._encode({'type':'tab','id':key}) for key,page in self._stable_tabs.items() if page in pages]
+            for ref in refs:
+                await self._prune_pinned_elements(tab_ref=ref)
+                self._snapshots.forget_target(ref)
+            try:await asyncio.wait_for(context.close(),timeout=3)
+            except Exception:cleanup_pending=True
+            for key,page in list(self._stable_tabs.items()):
+                if page in pages:self._stable_tabs.pop(key,None)
+        if external is not None:
+            try:await asyncio.wait_for(external['driver'].stop(),timeout=3)
+            except Exception:cleanup_pending=True
+        self._snapshots.forget_session(owner,session)
+        return {'released':True,'resource_cleanup':'pending' if cleanup_pending else 'completed'}
 
     async def _element_metadata(self, locator, include_attributes: bool = False) -> dict:
         script = """(el) => {
@@ -1233,154 +1658,7 @@ class BrowserDOMService:
         return sorted(targets)
 
     async def _launch_dedicated_edge(self) -> None:
-        user_dir = self._dedicated_user_data_dir()
-        user_dir.mkdir(parents=True, exist_ok=True)
-        active_port = user_dir / "DevToolsActivePort"
-
-        # Never create another Edge window for the same dedicated worker
-        # profile. Repeated connection probes can arrive while an existing
-        # worker is disconnected from CDP; launching with --new-window in that
-        # state would accumulate orphan about:blank windows.
-        existing_pids = self._worker_edge_pids()
-        if existing_pids:
-            self._auto_allow_remote_debugging_prompt(existing_pids, timeout=1.5)
-            endpoint_ready = False
-            try:
-                endpoint_ready = bool(
-                    active_port.is_file()
-                    and active_port.read_text(encoding="utf-8").strip()
-                )
-            except OSError:
-                endpoint_ready = False
-
-            self.audit.record(
-                "dom_worker_edge_launch_reused_or_blocked",
-                worker_edge_pids=existing_pids,
-                user_data_dir=str(user_dir),
-                endpoint_ready=endpoint_ready,
-            )
-            if endpoint_ready:
-                return
-            raise RuntimeError(
-                "Dedicated Worker Edge is already running for this profile, "
-                "but its remote-debugging endpoint is unavailable. Duplicate "
-                "launch blocked to prevent extra about:blank windows. Close or "
-                "restart the dedicated Worker Edge, or enable remote debugging "
-                "for that profile, then retry."
-            )
-
-        edge = Path(os.path.expandvars(self.config.edge_executable))
-        if not edge.is_file():
-            raise RuntimeError(f"Edge executable not found: {edge}")
-
-        try:
-            if active_port.is_file():
-                active_port.unlink()
-        except OSError:
-            pass
-
-        args = [
-            str(edge),
-            f"--user-data-dir={user_dir}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-session-crashed-bubble",
-            "--new-window",
-        ]
-        startup_offscreen = (
-            self.config.background_mode == "offscreen"
-            or self.config.visibility_guard_enabled
-        )
-        if startup_offscreen:
-            # Startup is intentionally offscreen. For minimized mode the
-            # normal restore bounds are applied only after CDP is connected.
-            args.extend([
-                "--window-position=-32000,-32000",
-                "--window-size=1280,900",
-            ])
-            if self.config.background_mode == "minimized":
-                args.append("--start-minimized")
-        else:
-            args.extend([
-                "--window-position=80,80",
-                "--window-size=1280,900",
-                "--start-minimized",
-            ])
-        args.append("about:blank")
-
-        creationflags = 0
-        creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0))
-        startupinfo = None
-        startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
-        if startupinfo_cls is not None:
-            startupinfo = startupinfo_cls()
-            startupinfo.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0))
-            # During guarded startup prefer a non-activating offscreen show.
-            startupinfo.wShowWindow = 4 if startup_offscreen else 7
-        previous_foreground = self._foreground_window_handle()
-        if previous_foreground:
-            self._worker_restore_foreground = int(previous_foreground)
-
-        # Install WinEvent hooks before CreateProcess so the first top-level
-        # Worker window is caught as early as Windows exposes it.
-        self._start_worker_focus_guard(previous_foreground, ())
-        process = subprocess.Popen(
-            args,
-            shell=False,
-            close_fds=True,
-            creationflags=creationflags,
-            startupinfo=startupinfo,
-        )
-        self._edge_process = process
-        self._worker_focus_guard_pids.add(int(process.pid))
-        self.audit.record(
-            "dom_worker_edge_started",
-            pid=int(process.pid),
-            user_data_dir=str(user_dir),
-            background_mode=self.config.background_mode,
-            launch_mode="normal_edge_autoconnect",
-        )
-
-        # The worker is launched as a normal browser. Remote debugging is
-        # enabled from edge://inspect and persists for this dedicated profile.
-        # Hide/minimize the worker immediately so startup never steals focus.
-        self._enforce_worker_background_window(
-            int(process.pid),
-            previous_foreground,
-        )
-        self._auto_allow_remote_debugging_prompt(int(process.pid), timeout=1.5)
-
-        # Normal Edge may surface the remote-debugging consent dialog only
-        # after ~20 seconds. Keep this below the broker's 40-second request
-        # ceiling, but long enough for UIA auto-approval to observe it.
-        deadline = time.monotonic() + max(
-            5.0,
-            min(28.0, self.config.max_timeout_ms / 1000.0),
-        )
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                self._stop_worker_focus_guard()
-                raise RuntimeError(
-                    f"Dedicated worker Edge exited early with code {process.returncode}."
-                )
-            self._auto_allow_remote_debugging_prompt(int(process.pid))
-            if active_port.is_file():
-                try:
-                    if active_port.read_text(encoding="utf-8").strip():
-                        self._auto_allow_remote_debugging_prompt(int(process.pid))
-                        return
-                except OSError:
-                    pass
-            await asyncio.sleep(0.1)
-
-        self._stop_worker_focus_guard()
-        raise TimeoutError(
-            "Timed out waiting for the dedicated worker Edge auto-connect endpoint. "
-            "Open edge://inspect/#remote-debugging once in this worker profile and "
-            "enable 'Allow remote debugging for this browser instance', then retry. "
-            f"Profile: {user_dir}"
-        )
+        raise PermissionError("BACKGROUND_ONLY: headed browser launch is forbidden")
 
     @staticmethod
     def _foreground_window_handle() -> int:
@@ -1393,89 +1671,7 @@ class BrowserDOMService:
 
     @staticmethod
     def _restore_foreground_window(hwnd: int) -> bool:
-        if os.name != "nt" or not hwnd:
-            return False
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        hwnd = int(hwnd)
-        if not user32.IsWindow(ctypes.c_void_p(hwnd)):
-            return False
-
-        current_thread = int(kernel32.GetCurrentThreadId() or 0)
-        foreground = int(user32.GetForegroundWindow() or 0)
-        fg_pid = ctypes.c_ulong()
-        target_pid = ctypes.c_ulong()
-        foreground_thread = (
-            int(
-                user32.GetWindowThreadProcessId(
-                    ctypes.c_void_p(foreground),
-                    ctypes.byref(fg_pid),
-                )
-                or 0
-            )
-            if foreground
-            else 0
-        )
-        target_thread = int(
-            user32.GetWindowThreadProcessId(
-                ctypes.c_void_p(hwnd),
-                ctypes.byref(target_pid),
-            )
-            or 0
-        )
-
-        attached_current = False
-        attached_foreground = False
-        try:
-            if (
-                current_thread
-                and target_thread
-                and current_thread != target_thread
-            ):
-                attached_current = bool(
-                    user32.AttachThreadInput(
-                        current_thread,
-                        target_thread,
-                        True,
-                    )
-                )
-            if (
-                foreground_thread
-                and target_thread
-                and foreground_thread != target_thread
-            ):
-                attached_foreground = bool(
-                    user32.AttachThreadInput(
-                        foreground_thread,
-                        target_thread,
-                        True,
-                    )
-                )
-            user32.BringWindowToTop(ctypes.c_void_p(hwnd))
-            user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
-        finally:
-            if attached_foreground:
-                user32.AttachThreadInput(
-                    foreground_thread,
-                    target_thread,
-                    False,
-                )
-            if attached_current:
-                user32.AttachThreadInput(
-                    current_thread,
-                    target_thread,
-                    False,
-                )
-        focused = int(user32.GetForegroundWindow() or 0) == hwnd
-        if not focused:
-            try:
-                switch_to = getattr(user32, "SwitchToThisWindow")
-                switch_to(ctypes.c_void_p(hwnd), True)
-                time.sleep(0.02)
-            except Exception:
-                pass
-            focused = int(user32.GetForegroundWindow() or 0) == hwnd
-        return focused
+        raise PermissionError("BACKGROUND_ONLY: foreground manipulation is forbidden")
 
     def _start_worker_focus_guard(
         self,
@@ -2269,7 +2465,7 @@ class BrowserDOMService:
     @staticmethod
     async def _safe_title(page) -> str:
         try:
-            return str(await page.title() or "")
+            return str(await asyncio.wait_for(page.title(),timeout=2) or "")
         except Exception:
             return ""
 
@@ -2280,24 +2476,34 @@ class BrowserDOMService:
 
     def _require_enabled(self) -> None:
         if not self.config.enabled:
-            raise PermissionError("Browser DOM automation is disabled.")
+            from ..automation_errors import PolicyDenied
+            raise PolicyDenied('local_policy')
 
     def _require_read(self) -> None:
         self._require_enabled()
         if not self.config.allow_read:
-            raise PermissionError("Browser DOM read access is disabled.")
+            from ..automation_errors import PolicyDenied
+            raise PolicyDenied('local_policy')
 
     def _require_mutation(self, flag: str, label: str) -> None:
         self._require_enabled()
         if not bool(getattr(self.config, flag)):
-            raise PermissionError(f"{label} is disabled by configuration.")
+            from ..automation_errors import PolicyDenied
+            raise PolicyDenied('local_policy')
 
     def _is_allowed_url(self, url: str) -> bool:
+        from ..control_plane_urls import protected_origin
+        if protected_origin(url):return False
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             return False
         host = (parsed.hostname or "").casefold()
         if not host:
+            return False
+        from ..tool_policy import principal_context
+        principal = principal_context.get()
+        delegated = getattr(principal, 'autonomous_hosts', None)
+        if delegated is not None and not any(host == item or host.endswith('.' + item) for item in delegated):
             return False
         allowed = tuple(x.casefold().strip() for x in self.config.allowed_hosts if x.strip())
         if "*" in allowed:
@@ -2305,10 +2511,13 @@ class BrowserDOMService:
         return any(host == item or host.endswith("." + item) for item in allowed)
 
     def _require_allowed_url(self, url: str) -> None:
+        from ..control_plane_urls import protected_origin
+        if protected_origin(url):
+            from ..automation_errors import PolicyDenied
+            raise PolicyDenied('local_policy')
         if not self._is_allowed_url(url):
-            raise PermissionError(
-                f"Browser DOM access to this URL is not allowed by browser_dom.allowed_hosts: {url}"
-            )
+            from ..automation_errors import PolicyDenied
+            raise PolicyDenied('blocked_host')
 
     @classmethod
     def _encode(cls, payload: dict) -> str:

@@ -32,14 +32,14 @@ def project_version() -> str:
 
 
 def copy_release_tree(stage: Path) -> None:
-    for name in ("src", "config", "tests", "integrations"):
+    for name in ("src", "config", "tests", "integrations", "docs"):
         src = ROOT / name
         if src.exists():
             shutil.copytree(
                 src,
                 stage / name,
                 dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.egg-info", "connection-profiles.local.json", "*.sqlite3", "*.jsonl", "*.log"),
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.egg-info", "*.local.json", "*.dpapi", ".env", ".env.*", "*.sqlite3", "*.sqlite3-*", "*.jsonl", "*.log", "*.SchDoc", "*.SchLib", "*.IntLib", "*.PrjPcb", "*.PrjPcbStructure", "*.PcbDoc"),
             )
 
     release_scripts = (
@@ -67,6 +67,7 @@ def copy_release_tree(stage: Path) -> None:
         "uninstall.ps1",
         "verify-release.ps1",
         "verify_runtime.py",
+        "sch3_offline_verify.py",
     )
     scripts_stage = stage / "scripts"
     scripts_stage.mkdir(parents=True, exist_ok=True)
@@ -75,7 +76,7 @@ def copy_release_tree(stage: Path) -> None:
         if src.exists():
             shutil.copy2(src, scripts_stage / name)
 
-    for name in ("pyproject.toml", "README.md", "README.vi.md", "LICENSE", "CHANGELOG.md", "RELEASE_NOTES_1.2.0.md"):
+    for name in ("pyproject.toml", "README.md", "README.vi.md", "README-SCH3.md", "LICENSE", "CHANGELOG.md", "RELEASE_NOTES_1.2.0.md"):
         shutil.copy2(ROOT / name, stage / name)
 
 
@@ -359,7 +360,9 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    stage = output_dir / f"ChatGPT-Actuator-{version}"
+    stage = (output_dir / f"ChatGPT-Actuator-{version}").resolve()
+    if stage.parent != output_dir:
+        raise RuntimeError("Build staging directory escaped the selected output directory")
     archive = output_dir / f"ChatGPT-Actuator-{version}-bootstrap-portable.zip"
 
     if stage.exists():

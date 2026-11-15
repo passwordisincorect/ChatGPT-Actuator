@@ -158,6 +158,7 @@ class BrowserDOMConfig:
     visibility_guard_enabled: bool = False
     background_mode: str = "offscreen"
     background_safe_events: bool = False
+    visible_browser: bool = False
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ class EDAConfig:
     default_timeout_seconds: float
     max_timeout_seconds: float
     max_output_bytes: int
+    altium_library_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -206,7 +208,8 @@ class AppConfig:
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    override = os.environ.get("CHATGPT_ACTUATOR_HOME")
+    return Path(override).resolve() if override else Path(__file__).resolve().parents[2]
 
 
 def _expand_project_root(value: object) -> str:
@@ -317,7 +320,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if admin_host not in {"127.0.0.1", "localhost"}:
         raise ConfigError("admin.host must be loopback-only: 127.0.0.1 or localhost.")
 
-    admin_port = int(os.environ.get("CHATGPT_ACTUATOR_ADMIN_PORT", admin_cfg.get("port", 8765)))
+    admin_port = int(admin_cfg.get("port", 8765))
     if not 1 <= admin_port <= 65535:
         raise ConfigError("admin.port must be between 1 and 65535.")
 
@@ -429,6 +432,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             verify_wait_ms=int(ui_automation_cfg.get("verify_wait_ms", 500)),
         ),
         browser_dom=BrowserDOMConfig(
+            visible_browser=bool(browser_dom_cfg.get('visible_browser',False)),
             enabled=bool(browser_dom_cfg.get("enabled", False)),
             allow_read=bool(browser_dom_cfg.get("allow_read", False)),
             allow_click=bool(browser_dom_cfg.get("allow_click", False)),
@@ -470,6 +474,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             default_timeout_seconds=eda_default_timeout,
             max_timeout_seconds=eda_max_timeout,
             max_output_bytes=eda_max_output_bytes,
+            altium_library_roots=tuple(_expand_project_root(x) for x in eda_cfg.get("altium_library_roots", [])),
         ),
         admin=AdminConfig(
             enabled=bool(admin_cfg.get("enabled", True)),

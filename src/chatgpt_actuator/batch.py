@@ -1,8 +1,9 @@
 from __future__ import annotations
+from .execution_errors import diagnostic
 
 import asyncio
 import inspect
-from time import perf_counter
+from time import perf_counter,monotonic
 from typing import Any, Callable, Mapping, Sequence
 
 
@@ -13,6 +14,9 @@ MAX_PARALLEL_ACTIONS = 8
 # execute concurrently in worker threads are allowed in parallel mode.
 PARALLEL_READ_ONLY_TOOLS = frozenset(
     {
+        "automation_schema_info",
+        "security_policy_info",
+        "work_session_status",
         "filesystem_list_roots",
         "filesystem_list",
         "filesystem_read_text",
@@ -25,6 +29,9 @@ PARALLEL_READ_ONLY_TOOLS = frozenset(
         "powershell_info",
         "screen_info",
         "clipboard_read_text",
+        "eda_altium_sch_check_pin_contracts",
+        "eda_altium_sch_diff_connectivity",
+        "eda_altium_sch_lint",
     }
 )
 
@@ -143,10 +150,11 @@ async def _run_one(
     started = perf_counter()
     try:
         value = await _invoke(handler, arguments, use_thread=use_thread)
+        failed=isinstance(value,dict) and isinstance(value.get('verification'),dict) and value['verification'].get('state')=='mismatch'
         return {
             "index": index,
             "tool": tool,
-            "ok": True,
+            "ok": not failed,
             "duration_ms": round((perf_counter() - started) * 1000, 3),
             "result": value,
         }
@@ -158,7 +166,8 @@ async def _run_one(
             "duration_ms": round((perf_counter() - started) * 1000, 3),
             "error": {
                 "type": type(exc).__name__,
-                "message": str(exc),
+                "message": diagnostic(exc,tool)['message'],
+                "diagnostic": diagnostic(exc,tool),
             },
         }
 
@@ -172,17 +181,29 @@ async def execute_batch(
 ) -> dict:
     normalized = _normalize_actions(actions, handlers)
     requested_mode = str(mode).strip().casefold()
-    if requested_mode not in {"sequential", "parallel_readonly"}:
-        raise ValueError("mode must be 'sequential' or 'parallel_readonly'.")
+    if requested_mode not in {"sequential", "parallel_readonly", "verified_dom"}:
+        raise ValueError("mode must be sequential, parallel_readonly or verified_dom")
 
     batch_started = perf_counter()
+    from .batch_preflight import check
+    preflight=[]
+    for index,tool,arguments in normalized:
+        try:
+            if requested_mode=='verified_dom':
+                from .verified_dom_flow import validate
+                validate(tool,arguments)
+            preflight.append(check(index,tool,arguments,handlers[tool]))
+        except Exception as exc:
+            return {'mode':requested_mode,'requested':len(normalized),'completed':0,'succeeded':0,'failed':0,'stopped_early':True,
+                    'duration_ms':round((perf_counter()-batch_started)*1000,3),'results':[],
+                    'ok':False,'preflight':{'state':'rejected','checked':preflight,'rejected_index':index,'error':{**diagnostic(exc,tool),'phase':'preflight','delivery_state':'not_dispatched','retry_safe':False},'delivery_state':'not_dispatched','retry_safe':False}}
 
     if requested_mode == "parallel_readonly":
         disallowed = sorted(
             {tool for _, tool, _ in normalized if tool not in PARALLEL_READ_ONLY_TOOLS}
         )
         if disallowed:
-            raise PermissionError(
+            raise ValueError(
                 "parallel_readonly accepts only conservative read-only tools; "
                 "not allowed: " + ", ".join(disallowed)
             )
@@ -206,10 +227,12 @@ async def execute_batch(
         results.sort(key=lambda item: item["index"])
     else:
         results: list[dict] = []
+        from . import flow_deadline
+        flow_end=monotonic()+flow_deadline.DEADLINE_SECONDS
         for index, tool, arguments in normalized:
             started = perf_counter()
             try:
-                resolved_arguments = _resolve_value(arguments, results)
+                resolved_arguments = arguments if tool=='batch_preview' else _resolve_value(arguments, results)
             except Exception as exc:
                 item = {
                     "index": index,
@@ -218,25 +241,29 @@ async def execute_batch(
                     "duration_ms": round((perf_counter() - started) * 1000, 3),
                     "error": {
                         "type": type(exc).__name__,
-                        "message": str(exc),
+                        "message": diagnostic(exc,tool)['message'],
+                "diagnostic": diagnostic(exc,tool),
                     },
                 }
             else:
-                item = await _run_one(
-                    index,
-                    tool,
-                    resolved_arguments,
-                    handlers[tool],
-                    use_thread=False,
-                )
+                if requested_mode=='verified_dom':
+                    item=await flow_deadline.run_step(index,tool,resolved_arguments,handlers[tool],_run_one,flow_end)
+                else:
+                    item = await _run_one(index,tool,resolved_arguments,handlers[tool],use_thread=False)
 
+            if requested_mode=='verified_dom':
+                from .verified_dom_flow import assess
+                halt=assess(tool,item)
+                if halt:
+                    item['ok']=False
+                    item['flow_halt']={'reason':halt,'automatic_replay':False,'retry_safe':False,'next_action':'Inspect the observed target state before requesting another action'}
             results.append(item)
-            if not item["ok"] and stop_on_error:
+            if not item["ok"] and (stop_on_error or requested_mode=='verified_dom'):
                 break
 
     failed = sum(1 for item in results if not item["ok"])
     completed = len(results)
-    stopped_early = requested_mode == "sequential" and completed < len(normalized)
+    stopped_early = requested_mode in {"sequential","verified_dom"} and completed < len(normalized)
 
     return {
         "mode": requested_mode,
@@ -247,4 +274,6 @@ async def execute_batch(
         "stopped_early": stopped_early,
         "duration_ms": round((perf_counter() - batch_started) * 1000, 3),
         "results": results,
+        "preflight": {'state':'static_checked','actions':preflight,'atomic':False},
+        **({'ok':not failed,'timed_out':any(row.get('error',{}).get('diagnostic',{}).get('code')=='DEADLINE_EXCEEDED' for row in results),'flow':{'state':'halted' if failed else 'observations_confirmed','deadline_seconds':flow_deadline.DEADLINE_SECONDS,'unexecuted_actions':len(normalized)-completed,'unexecuted_delivery_state':'not_dispatched','automatic_replay':False,'business_outcome_verified':False}} if requested_mode=='verified_dom' else {}),
     }

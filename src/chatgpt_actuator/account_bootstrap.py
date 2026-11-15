@@ -8,15 +8,18 @@ import tomllib
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+CONTEXT_SCHEMA_VERSION = 1
+TRANSFER_MARKER = "CHATGPT_PROFILE_MIGRATION_V3"
 
 
 class AccountBootstrap:
     """Create a portable, non-secret bootstrap pack for a new ChatGPT account.
 
     The pack deliberately excludes cookies, OAuth tokens, session data, API keys,
-    DPAPI blobs, and chat/account credentials. Account-bound plugins still need
-    authorization in the destination ChatGPT account.
+    DPAPI blobs, and ChatGPT account credentials. It also does not claim to copy
+    OpenAI's account-scoped Memory. Instead, it preserves an explicit portable
+    working-context layer: identity preferences, workflow rules, and project state.
     """
 
     def __init__(self, actuator_root: Path) -> None:
@@ -33,6 +36,7 @@ class AccountBootstrap:
         self.plugins_path = self.profile_root / "plugins.json"
         self.projects_path = self.profile_root / "projects.json"
         self.preferences_path = self.profile_root / "preferences.json"
+        self.context_path = self.profile_root / "context.json"
         self.bootstrap_path = self.profile_root / "bootstrap.md"
 
     @staticmethod
@@ -65,6 +69,23 @@ class AccountBootstrap:
             return str(data.get("project", {}).get("version", "unknown"))
         except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
             return "unknown"
+
+    @classmethod
+    def _deep_merge_defaults(cls, defaults: Any, existing: Any) -> Any:
+        """Merge defaults underneath existing user-authored content.
+
+        Existing values always win. Missing nested keys are filled from defaults.
+        Lists are treated as authored values and are not merged item-by-item.
+        """
+        if isinstance(defaults, dict) and isinstance(existing, dict):
+            merged = dict(defaults)
+            for key, value in existing.items():
+                if key in merged:
+                    merged[key] = cls._deep_merge_defaults(merged[key], value)
+                else:
+                    merged[key] = value
+            return merged
+        return existing
 
     def _default_plugins(self) -> list[dict[str, Any]]:
         return [
@@ -127,8 +148,6 @@ class AccountBootstrap:
         else:
             return self._default_plugins()
 
-        # Enrich known entries with portable metadata without overwriting
-        # user-authored fields. Unknown/custom entries are preserved unchanged.
         defaults = {item["name"]: item for item in self._default_plugins()}
         legacy_actions = {
             "ChatGPT-Actuator": "Install/connect in the new ChatGPT account and approve access.",
@@ -142,51 +161,175 @@ class AccountBootstrap:
             name = item.get("name")
             base = dict(defaults.get(name, {}))
             preserved = dict(item)
-            # Migrate only exact strings emitted by schema v1. Any human-edited
-            # destination_action remains authoritative.
             if preserved.get("destination_action") == legacy_actions.get(name):
                 preserved.pop("destination_action", None)
             base.update(preserved)
             enriched.append(base)
         return enriched
 
+    def _default_projects(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "ChatGPT-Actuator",
+                "path": str(self.actuator_root),
+                "portable": True,
+            },
+            {
+                "name": "ChatGPT-Orchestrator",
+                "path": str(self.orchestrator_root),
+                "portable": True,
+            },
+        ]
+
     def _projects(self) -> dict[str, Any]:
         existing = self._read_json(self.projects_path, {})
         projects = existing.get("projects") if isinstance(existing, dict) else None
         if not isinstance(projects, list):
-            projects = [
-                {
-                    "name": "ChatGPT-Actuator",
-                    "path": str(self.actuator_root),
-                    "portable": True,
-                },
-                {
-                    "name": "ChatGPT-Orchestrator",
-                    "path": str(self.orchestrator_root),
-                    "portable": True,
-                },
-            ]
+            projects = self._default_projects()
         return {
             "schema_version": SCHEMA_VERSION,
             "workspace_root": str(self.workspace_root),
             "projects": projects,
         }
 
+    def _default_preferences(self) -> dict[str, Any]:
+        return {
+            "architecture": (
+                "ChatGPT MAIN -> Actuator for direct local actions; "
+                "Orchestrator for complex delegated/review work"
+            ),
+            "execution_policy": (
+                "background-first; prefer DOM/UIA/native structured interfaces; "
+                "avoid physical mouse/keyboard when a semantic path exists"
+            ),
+            "verification_policy": (
+                "inspect before changing; preserve a rollback path; verify meaningful edits"
+            ),
+            "restart_policy": (
+                "do not restart the ChatGPT-Actuator tunnel automatically; "
+                "request explicit approval when a tunnel restart is actually required"
+            ),
+            "account_switch_goal": (
+                "restore local project context, habits, and workflow with minimum manual setup"
+            ),
+        }
+
     def _preferences(self) -> dict[str, Any]:
         existing = self._read_json(self.preferences_path, {})
         preferences = existing.get("preferences") if isinstance(existing, dict) else None
         if not isinstance(preferences, dict):
-            preferences = {
-                "architecture": "ChatGPT MAIN -> Actuator for direct actions; Orchestrator for complex delegated work",
-                "execution_policy": "background-first, semantic automation preferred; avoid copying account credentials",
-                "account_switch_goal": "restore local project context with minimum manual setup",
-            }
+            preferences = {}
+        preferences = self._deep_merge_defaults(
+            self._default_preferences(),
+            preferences,
+        )
         return {
             "schema_version": SCHEMA_VERSION,
             "preferences": preferences,
         }
 
-    def _profile(self, plugins: list[dict[str, Any]]) -> dict[str, Any]:
+    def _default_context(self) -> dict[str, Any]:
+        return {
+            "schema_version": CONTEXT_SCHEMA_VERSION,
+            "kind": "portable_working_context",
+            "official_chatgpt_memory": False,
+            "identity_context": {
+                "preferred_language": "vi",
+                "role_context": (
+                    "Sinh viên công nghệ điều khiển và tự động hóa, "
+                    "chuyên ngành Robot và AI"
+                ),
+                "response_preferences": [
+                    "Ưu tiên trả lời trực tiếp, thực dụng và có thể triển khai.",
+                    "Khi có thao tác máy tính, ưu tiên thực hiện bằng công cụ thay vì chỉ hướng dẫn.",
+                    "Giải thích kỹ thuật theo hướng dễ kiểm chứng, nêu rõ giới hạn nếu có.",
+                ],
+            },
+            "workflow_memory": {
+                "routing": [
+                    "Dùng ChatGPT-Actuator cho thao tác local trực tiếp và workflow ngắn, xác định.",
+                    "Dùng ChatGPT-Orchestrator cho công việc phức tạp cần phân vai, review/rework hoặc recovery.",
+                ],
+                "automation": [
+                    "Background-first; tránh chiếm focus.",
+                    "Ưu tiên DOM/CDP, API hoặc UI Automation có ngữ nghĩa.",
+                    "Không giả lập chuột/bàn phím nếu có đường structured/semantic tương đương.",
+                ],
+                "safety_and_change_management": [
+                    "Kiểm tra trạng thái hiện tại trước khi sửa.",
+                    "Tạo rollback/backup phù hợp trước thay đổi đáng kể.",
+                    "Patch nhỏ, sau đó test/verify trước khi tuyên bố hoàn tất.",
+                    "Không tự restart tunnel ChatGPT-Actuator nếu chưa có yêu cầu/đồng ý rõ ràng.",
+                    "Không sao chép cookie ChatGPT, OAuth token, API key, session token hoặc DPAPI secret.",
+                ],
+                "browser": [
+                    "Worker dùng cửa sổ Edge riêng, chạy nền; không dùng Main Edge cho worker automation.",
+                    "Ưu tiên một worker window dùng chung với các tab pooled/background.",
+                    "Main và Worker nên dùng cùng tài khoản ChatGPT sau khi đổi tài khoản.",
+                ],
+                "eda": [
+                    "Ưu tiên hoàn thiện schematic trước PCB.",
+                    "PCB giai đoạn đầu chỉ cần sắp xếp linh kiện, chưa route trace.",
+                    "Schematic: đúng điện trước, bố trí trước wiring, dây trực giao và verify ERC sau thay đổi.",
+                    "Không đoán kết nối điện khi ý định mơ hồ.",
+                ],
+                "learning": [
+                    "C++ cơ bản ưu tiên thực hành, đọc code, tự viết và debug.",
+                    "Ví dụ có thể gắn với STM32/robotics khi phù hợp.",
+                ],
+            },
+            "project_memory": {
+                "ChatGPT-Actuator": {
+                    "path": str(self.actuator_root),
+                    "state": "active",
+                    "notes": [
+                        "Local Windows execution plane with permission gates.",
+                        "Background-safe automation is preferred.",
+                        "Experimental EDA/KiCad schematic tooling is integrated.",
+                    ],
+                },
+                "ChatGPT-Orchestrator": {
+                    "path": str(self.orchestrator_root),
+                    "state": "active",
+                    "notes": [
+                        "Multi-worker control plane for complex work.",
+                        "Dedicated Worker Edge with background DOM/CDP is preferred.",
+                        "Persistent project/task state is used when durable context is needed.",
+                    ],
+                },
+                "KiCad-Schematic": {
+                    "path_hint": str(self.workspace_root),
+                    "state": "active",
+                    "notes": [
+                        "Schematic-first workflow.",
+                        "Use structured/file-backed KiCad editing and verification instead of mouse/keyboard automation.",
+                    ],
+                },
+                "C++-Training": {
+                    "state": "active",
+                    "notes": [
+                        "10-session beginner curriculum for Robotics & Technology club.",
+                        "Target balance: 30% theory, 70% practice.",
+                    ],
+                },
+            },
+        }
+
+    def _context(self) -> dict[str, Any]:
+        existing = self._read_json(self.context_path, {})
+        if not isinstance(existing, dict):
+            existing = {}
+        merged = self._deep_merge_defaults(self._default_context(), existing)
+        merged["schema_version"] = CONTEXT_SCHEMA_VERSION
+        merged["kind"] = "portable_working_context"
+        merged["official_chatgpt_memory"] = False
+        return merged
+
+    def _profile(
+        self,
+        plugins: list[dict[str, Any]],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "generated_at": self._now(),
@@ -213,6 +356,17 @@ class AccountBootstrap:
                     ),
                 },
             },
+            "portable_context": {
+                "file": str(self.context_path),
+                "layers": [
+                    "identity_context",
+                    "workflow_memory",
+                    "project_memory",
+                ],
+                "official_chatgpt_memory": bool(
+                    context.get("official_chatgpt_memory", False)
+                ),
+            },
             "plugins": [
                 {
                     "name": item.get("name", "unknown"),
@@ -227,30 +381,81 @@ class AccountBootstrap:
                 "copy_chatgpt_session": False,
                 "copy_api_keys": False,
                 "copy_dpapi_secrets": False,
-                "reason": "Credentials remain account/device scoped and must not be migrated by the bootstrap pack.",
+                "copy_official_chatgpt_memory": False,
+                "reason": (
+                    "Credentials and OpenAI account-scoped state remain account/device "
+                    "scoped and are not migrated by the local bootstrap pack."
+                ),
             },
         }
+
+    @staticmethod
+    def _markdown_value(value: Any, indent: int = 0) -> list[str]:
+        prefix = "  " * indent
+        lines: list[str] = []
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, (dict, list)):
+                    lines.append(f"{prefix}- {key}:")
+                    lines.extend(AccountBootstrap._markdown_value(item, indent + 1))
+                else:
+                    lines.append(f"{prefix}- {key}: {item}")
+            return lines
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    lines.append(f"{prefix}-")
+                    lines.extend(AccountBootstrap._markdown_value(item, indent + 1))
+                else:
+                    lines.append(f"{prefix}- {item}")
+            return lines
+        return [f"{prefix}- {value}"]
 
     def _bootstrap_markdown(
         self,
         profile: dict[str, Any],
         plugins: list[dict[str, Any]],
+        projects: dict[str, Any],
+        preferences: dict[str, Any],
+        context: dict[str, Any],
     ) -> str:
         lines = [
             "# ChatGPT Account Bootstrap",
             "",
             f"Generated: {profile['generated_at']}",
             "",
-            "Use this pack after signing in to the destination ChatGPT account.",
-            "It restores local Agent OS context; it does not copy authentication secrets.",
+            "This is a portable working-context handoff, not an import of OpenAI account Memory.",
+            "Use it after signing in to the destination ChatGPT account.",
+            "It restores explicit local workflow/project context and never copies authentication secrets.",
             "",
             "## Local services",
             f"- ChatGPT-Actuator: {self.actuator_root}",
             f"- ChatGPT-Orchestrator: {self.orchestrator_root}",
             "- Control Center: http://127.0.0.1:8764/",
             "",
-            "## Plugins/connectors to restore",
+            "## Portable preferences",
         ]
+        lines.extend(self._markdown_value(preferences.get("preferences", {})))
+
+        lines.extend(["", "## Identity context"])
+        lines.extend(self._markdown_value(context.get("identity_context", {})))
+
+        lines.extend(["", "## Workflow memory"])
+        lines.extend(self._markdown_value(context.get("workflow_memory", {})))
+
+        lines.extend(["", "## Project memory"])
+        lines.extend(self._markdown_value(context.get("project_memory", {})))
+
+        lines.extend(["", "## Portable project paths"])
+        for item in projects.get("projects", []):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"- {item.get('name', 'unknown')}: "
+                f"{item.get('path', '-')}; portable={bool(item.get('portable', True))}"
+            )
+
+        lines.extend(["", "## Plugins/connectors to restore"])
         for item in plugins:
             details: list[str] = []
             if item.get("kind"):
@@ -268,26 +473,32 @@ class AccountBootstrap:
                 f"- {item.get('name', 'unknown')}{suffix}: "
                 f"{item.get('destination_action', 'Reconnect in the new account.')}"
             )
+
         lines.extend(
             [
                 "",
-                "## Bootstrap prompt for the new account",
+                "## Bootstrap instructions for the destination chat",
                 "",
-                "I use a local Agent OS with ChatGPT MAIN as the interface. "
-                "Use ChatGPT-Actuator for direct local actions and "
-                "chatgpt-orchestrator for complex delegated/review work. "
-                f"The local workspace root is {self.workspace_root}. "
-                "Do not copy or request old ChatGPT cookies, OAuth tokens, API keys, "
-                "session data, or DPAPI secrets. Read plugins.json from this bootstrap pack. "
+                "Treat the sections above as explicit portable working context for this user.",
+                "Use identity_context for communication preferences, workflow_memory for default "
+                "operating rules, and project_memory only when the current request is relevant.",
+                "Do not claim this imported OpenAI Memory or reconstructed hidden personalization.",
+                "Use ChatGPT-Actuator for direct local actions and chatgpt-orchestrator for "
+                "complex delegated/review work when available.",
+                f"The local workspace root is {self.workspace_root}.",
+                "Do not copy or request old ChatGPT cookies, OAuth tokens, API keys, session "
+                "data, or DPAPI secrets.",
+                "Read plugins.json from this bootstrap pack when local file access is available.",
                 "For public plugins, use the canonical plugin_id when available. For private "
                 "Tunnel connectors, recreate/connect them with the recorded tunnel_profile; "
                 "source_account_app_id values are references only and must not be treated as "
-                "portable credentials. Ask only for authorizations that the new account must grant.",
+                "portable credentials.",
+                "Ask only for authorizations that the destination account must grant.",
                 "",
-                "## What still requires account authorization",
+                "## What still remains account-scoped",
                 "",
-                "ChatGPT plugins/connectors, OAuth-backed services, workspace membership, "
-                "subscription, ChatGPT Memory, and chat history remain account-scoped.",
+                "Official ChatGPT Memory, chat history, subscription, workspace membership, "
+                "and OAuth-backed authorizations are not cloned by this local migration.",
                 "",
             ]
         )
@@ -298,7 +509,8 @@ class AccountBootstrap:
         plugins = self._plugins()
         projects = self._projects()
         preferences = self._preferences()
-        profile = self._profile(plugins)
+        context = self._context()
+        profile = self._profile(plugins, context)
 
         self._write_json(self.profile_path, profile)
         self._write_json(
@@ -310,8 +522,15 @@ class AccountBootstrap:
         )
         self._write_json(self.projects_path, projects)
         self._write_json(self.preferences_path, preferences)
+        self._write_json(self.context_path, context)
         self.bootstrap_path.write_text(
-            self._bootstrap_markdown(profile, plugins),
+            self._bootstrap_markdown(
+                profile,
+                plugins,
+                projects,
+                preferences,
+                context,
+            ),
             encoding="utf-8",
         )
 
@@ -321,6 +540,16 @@ class AccountBootstrap:
         if not self.bootstrap_path.is_file():
             self.export()
         return self.bootstrap_path.read_text(encoding="utf-8")
+
+    def transfer_prompt(self) -> str:
+        """Return the single message intended to be sent to a destination chat."""
+        self.export()
+        return (
+            f"{TRANSFER_MARKER}\n"
+            "This message transfers my explicit portable working context from my previous "
+            "local ChatGPT setup. It is not an import of official ChatGPT Memory.\n\n"
+            + self.bootstrap_text()
+        )
 
     def prepare_destination(self) -> dict[str, Any]:
         current = self.export()
@@ -336,6 +565,7 @@ class AccountBootstrap:
             "local_profile_ready": True,
             "profile_root": str(self.profile_root),
             "portable_files": current["files"],
+            "context_layers": current["context_layers"],
             "manual_authorizations": [
                 {
                     "name": item.get("name", "unknown"),
@@ -350,10 +580,10 @@ class AccountBootstrap:
                 for item in manual
             ],
             "message": (
-                "Local bootstrap pack is ready. Account-bound plugins/connectors "
+                "Portable working context is ready. Account-bound plugins/connectors "
                 "still require destination-account authorization."
             ),
-            "bootstrap_text": self.bootstrap_text(),
+            "bootstrap_text": self.transfer_prompt(),
         }
 
     def status(self) -> dict[str, Any]:
@@ -362,9 +592,11 @@ class AccountBootstrap:
             "plugins": str(self.plugins_path),
             "projects": str(self.projects_path),
             "preferences": str(self.preferences_path),
+            "context": str(self.context_path),
             "bootstrap": str(self.bootstrap_path),
         }
         profile = self._read_json(self.profile_path, {})
+        context = self._read_json(self.context_path, {})
         plugins = self._plugins()
         manual_count = sum(
             1
@@ -372,13 +604,24 @@ class AccountBootstrap:
             if item.get("account_bound", True)
             and item.get("authorization") not in {"none", "not_required"}
         )
+        layers = [
+            key
+            for key in ("identity_context", "workflow_memory", "project_memory")
+            if isinstance(context.get(key), dict)
+        ]
         return {
             "profile_root": str(self.profile_root),
             "exists": self.profile_path.is_file(),
             "generated_at": profile.get("generated_at"),
+            "schema_version": profile.get("schema_version"),
             "files": files,
             "portable_file_count": sum(Path(path).is_file() for path in files.values()),
+            "portable_file_total": len(files),
             "plugin_count": len(plugins),
             "manual_authorization_count": manual_count,
+            "context_layers": layers,
+            "context_layer_count": len(layers),
+            "transfer_marker": TRANSFER_MARKER,
             "secrets_included": False,
+            "official_chatgpt_memory_included": False,
         }

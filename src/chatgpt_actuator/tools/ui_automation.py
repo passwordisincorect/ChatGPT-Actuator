@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import time
+from collections import deque
 from contextlib import contextmanager
 
 import pythoncom
@@ -33,6 +34,46 @@ class UIAutomationService:
         self.config = config
         self.audit = audit
 
+    def snapshot(self, target_hwnd: int, max_depth: int | None = None,
+                 max_items: int | None = None, include_hidden: bool = False, content_only: bool = False, root_ref: str | None = None) -> dict:
+        """Read one explicit window without focusing it or reading control values."""
+        self._require_enabled()
+        depth_limit, limit = self._depth_limit(max_depth), self._item_limit(max_items)
+        status = {}
+        nodes = []
+        indices = {}
+        with self._com_scope():
+            root = self._resolve_ref(int(target_hwnd),root_ref) if root_ref else self._window(int(target_hwnd))
+            for depth, element in self._walk(root, depth_limit, int(target_hwnd),
+                                             status=status, scan_limit=limit, exclude_types=('TitleBar','MenuBar') if content_only else ()):
+                try:
+                    if not include_hidden and not bool(getattr(element.element_info, "visible", True)):
+                        continue
+                    node = self._metadata(int(target_hwnd), element, depth)
+                except Exception:
+                    status["provider_errors"] += 1
+                    status["truncated"] = True
+                    if "provider_error" not in status["truncation_reasons"]:
+                        status["truncation_reasons"].append("provider_error")
+                    continue
+                parent_id = status.get("_parent_runtime_id")
+                node["parent_index"] = indices.get(parent_id) if parent_id else None
+                node["index"] = len(nodes)
+                indices[tuple(node["runtime_id"])] = node["index"]
+                for field in ("name", "automation_id", "class_name"):
+                    original = node[field]
+                    node[field] = original[:512]
+                    if len(original) > 512:
+                        node[field + "_truncated"] = True
+                node["patterns"] = self._patterns(element)
+                nodes.append(node)
+        status.pop("_parent_runtime_id", None)
+        self.audit.record("uia_snapshot", target_hwnd=int(target_hwnd),
+                          returned=len(nodes), scanned=status.get("scanned", 0))
+        return {"backend": "uia", "target_hwnd": int(target_hwnd), "elements": nodes,
+                "returned": len(nodes), "values_included": False, "scope": "subtree" if root_ref else "window", "root_ref": root_ref,
+                "limits": {"max_depth": depth_limit, "max_scanned": limit}, **status}
+
     def list_elements(
         self,
         target_hwnd: int,
@@ -53,7 +94,8 @@ class UIAutomationService:
             items = []
             scanned = 0
             truncated = False
-            for depth, element in self._walk(root, depth_limit, target_hwnd=int(target_hwnd)):
+            traversal = {}
+            for depth, element in self._walk(root, depth_limit, target_hwnd=int(target_hwnd), status=traversal):
                 scanned += 1
                 info = element.element_info
                 if not include_hidden and not bool(getattr(info, "visible", True)):
@@ -69,6 +111,7 @@ class UIAutomationService:
                 if len(items) >= item_limit:
                     truncated = True
                     break
+            truncated = truncated or traversal.get("truncated", False)
 
         self.audit.record(
             "uia_list",
@@ -84,6 +127,8 @@ class UIAutomationService:
             "elements": items,
             "returned": len(items),
             "truncated": truncated,
+            "scanned": traversal.get("scanned", scanned),
+            "truncation_reasons": traversal.get("truncation_reasons", []) + (["result_limit"] if len(items) >= item_limit else []),
         }
 
     def find_elements(
@@ -115,7 +160,8 @@ class UIAutomationService:
             root = self._window(int(target_hwnd))
             matches = []
             scanned = 0
-            for depth, element in self._walk(root, depth_limit, target_hwnd=int(target_hwnd)):
+            traversal = {}
+            for depth, element in self._walk(root, depth_limit, target_hwnd=int(target_hwnd), status=traversal):
                 scanned += 1
                 if self._matches(
                     element,
@@ -147,6 +193,11 @@ class UIAutomationService:
             "target_hwnd": int(target_hwnd),
             "matches": matches,
             "count": len(matches),
+            "availability": {"state":"matches_observed" if matches else "capture_incomplete" if traversal.get("truncated",False) else "no_matching_control_observed",
+                             "input_dispatched":False,"next_action":"Inspect exposed patterns before input" if matches else "Inspect the intended app state and accessibility provider; do not type without a verified editable control"},
+            "scanned": traversal.get("scanned", scanned),
+            "truncated": traversal.get("truncated", False) or len(matches) >= item_limit,
+            "truncation_reasons": traversal.get("truncation_reasons", []) + (["result_limit"] if len(matches) >= item_limit else []),
         }
 
     def details(
@@ -222,6 +273,7 @@ class UIAutomationService:
                 raise PermissionError(
                     "The target element does not expose UI Automation InvokePattern."
                 )
+            self._check_action_condition(element)
             iface.Invoke()
 
         time.sleep(min(0.15, max(0.0, self.config.verify_wait_ms / 1000.0)))
@@ -271,6 +323,7 @@ class UIAutomationService:
                 raise PermissionError("The target UI Automation value is read-only.")
 
             before = str(iface.CurrentValue or "")
+            self._check_action_condition(element)
             iface.SetValue(value)
 
         passed, actual = self._wait_value(int(target_hwnd), element_ref, value)
@@ -309,6 +362,7 @@ class UIAutomationService:
                     "The target element does not expose UI Automation TogglePattern."
                 )
             before = int(iface.CurrentToggleState)
+            self._check_action_condition(element)
             iface.Toggle()
 
         after = self._wait_toggle_change(int(target_hwnd), element_ref, before)
@@ -342,6 +396,7 @@ class UIAutomationService:
                     "The target element does not expose UI Automation SelectionItemPattern."
                 )
             before = bool(iface.CurrentIsSelected)
+            self._check_action_condition(element)
             iface.Select()
 
         after = self._wait_selected(int(target_hwnd), element_ref)
@@ -381,12 +436,17 @@ class UIAutomationService:
                     "The target element does not expose UI Automation ExpandCollapsePattern."
                 )
             before = int(iface.CurrentExpandCollapseState)
+            self._check_action_condition(element)
             if normalized == "expand":
                 iface.Expand()
             else:
                 iface.Collapse()
 
-        after = self._wait_expand_state(int(target_hwnd), element_ref, normalized)
+        # Read failure after the single dispatch cannot prove a mismatch,
+        # nor authorize repeating an expansion/collapse.
+        try:after = self._wait_expand_state(int(target_hwnd), element_ref, normalized)
+        except Exception:after = -1
+        observation_unavailable=after not in _EXPAND_NAMES
         self.audit.record(
             "uia_expand_collapse",
             target_hwnd=int(target_hwnd),
@@ -400,7 +460,8 @@ class UIAutomationService:
             "element_ref": element_ref,
             "action": normalized,
             "before": _EXPAND_NAMES.get(before, str(before)),
-            "after": _EXPAND_NAMES.get(after, str(after)),
+            "after": _EXPAND_NAMES.get(after, 'unavailable'),
+            "observation_unavailable": observation_unavailable,
         }
 
     def scroll(
@@ -536,6 +597,7 @@ class UIAutomationService:
             before = float(iface.CurrentValue)
             if requested < minimum or requested > maximum:
                 raise ValueError(f"value must be between {minimum} and {maximum}.")
+            self._check_action_condition(element)
             iface.SetValue(requested)
 
         deadline = time.monotonic() + self.config.verify_wait_ms / 1000.0
@@ -649,7 +711,7 @@ class UIAutomationService:
             "uia_window_action",
             target_hwnd=int(target_hwnd),
             element_ref=element_ref,
-            action=normalized,
+            requested_action=normalized,
             before_state=before_state,
         )
         return {
@@ -663,25 +725,68 @@ class UIAutomationService:
     def _window(self, target_hwnd: int):
         return Desktop(backend="uia").window(handle=int(target_hwnd)).wrapper_object()
 
-    def _walk(self, root, max_depth: int, target_hwnd: int | None = None):
-        queue = [(0, root)]
+    def _walk(self, root, max_depth: int, target_hwnd: int | None = None,
+              *, status: dict | None = None, scan_limit: int | None = None, exclude_types=()):
+        # Provider calls are synchronous: the clock is cooperative, not a COM timeout.
+        state = status if status is not None else {}
+        state.update(scanned=0, truncated=False, truncation_reasons=[], provider_errors=0)
+        limit = max(1, int(scan_limit or self.config.max_items * 4))
+        deadline = time.monotonic() + 5.0
+        queue = deque([(0, root, None)])
+        seen = set()
+        def truncate(reason):
+            state["truncated"] = True
+            if reason not in state["truncation_reasons"]:
+                state["truncation_reasons"].append(reason)
         while queue:
-            depth, element = queue.pop(0)
+            if state["scanned"] >= limit:
+                truncate("scan_limit")
+                break
+            if time.monotonic() >= deadline:
+                truncate("cooperative_time_limit")
+                break
+            depth, element, parent_id = queue.popleft()
+            state["scanned"] += 1
+            if exclude_types:
+                try:
+                    if element.element_info.control_type in exclude_types:continue
+                except Exception:
+                    truncate('provider_error');state['provider_errors']+=1;continue
+            try:
+                runtime_id = self._runtime_id(element)
+                key = ("runtime", runtime_id) if runtime_id else ("object", id(element))
+                if key in seen:
+                    continue
+                seen.add(key)
+            except Exception:
+                runtime_id = None
+                key = ("object", id(element))
+                if key in seen:
+                    continue
+                seen.add(key)
             if (
                 target_hwnd is not None
                 and depth > 0
                 and not self._belongs_to_target_window(int(target_hwnd), element)
             ):
                 continue
+            state["_parent_runtime_id"] = parent_id
             yield depth, element
-            if depth >= max_depth:
-                continue
             try:
                 children = element.children()
             except Exception:
+                state["provider_errors"] += 1
+                truncate("provider_error")
                 children = []
-            for child in children:
-                queue.append((depth + 1, child))
+            if depth >= max_depth:
+                if children:
+                    truncate("depth_limit")
+                continue
+            remaining = limit - state["scanned"] - len(queue)
+            if len(children) > remaining:
+                truncate("scan_limit")
+            for child in children[:max(0, remaining)]:
+                queue.append((depth + 1, child, runtime_id))
 
     def _belongs_to_target_window(self, target_hwnd: int, element) -> bool:
         """Reject UIA nodes that Chromium providers leak from another top-level HWND.
@@ -800,6 +905,10 @@ class UIAutomationService:
             "text": self._iface(element, "iface_text") is not None,
             "window": self._iface(element, "iface_window") is not None,
         }
+
+    def _check_action_condition(self,element):
+        from ..uia_conditions import check
+        check(self,element,getattr(self,'action_precondition',None))
 
     def _resolve_ref(self, target_hwnd: int, element_ref: str):
         ref_hwnd, runtime_id = self._parse_ref(element_ref)

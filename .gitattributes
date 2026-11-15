@@ -1,0 +1,4 @@
+* text=auto eol=lf
+# Native AD26 receipts bind raw adapter bytes; preserve the qualified sources.
+src/chatgpt_actuator/tools/eda_altium*.py -text whitespace=cr-at-eol
+src/chatgpt_actuator/tools/altium_scripts/Bridge.pas -text whitespace=cr-at-eol
