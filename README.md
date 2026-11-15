@@ -1,14 +1,14 @@
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-# ChatGPT-Actuator 1.3.0.dev0
+# ChatGPT-Actuator 1.3.0rc1
 
 ChatGPT-Actuator is a permission-gated Windows MCP actuator for ChatGPT.
 
-> **SCH3 candidate:** This branch also contains an experimental, single-sheet Altium Designer 26 schematic workflow. It is not a release or activation of the default runtime. See [README-SCH3.md](README-SCH3.md) for scope, local setup, and validation limits.
+> **SCH3 candidate:** This branch also contains an experimental, single-sheet Altium Designer 26 schematic workflow. It is a prerelease candidate and does not activate the default runtime. See [README-SCH3.md](README-SCH3.md) for scope, local setup, and validation limits.
 
 This source candidate brings the r2 runtime foundation and SCH3 schematic tools into the repository. It retains the optional Tailscale Funnel/OAuth and OpenAI Tunnel connections from 1.2.0.
 
-**Source vs. published release:** The checked-in `pyproject.toml` is version **1.3.0.dev0**; the latest verified downloadable GitHub [Release is v1.0.0](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.0.0). The v1.0.0 ZIP/wheel are not a prebuilt distribution of this development source. For the current source, follow the setup and build instructions below; the [CI workflow](.github/workflows/ci.yml) validates the tracked code.
+**Release channels:** This source is **1.3.0rc1**, an experimental [prerelease candidate](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.3.0rc1). The stable release remains [v1.0.0](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.0.0). See [RC release notes](RELEASE_NOTES_1.3.0rc1.md) for installation and limits; the [CI workflow](.github/workflows/ci.yml) validates the tracked code. Installing an RC is an explicit choice and does not update an existing runtime automatically.
 
 ## Candidate integration contracts
 

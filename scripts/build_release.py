@@ -31,7 +31,7 @@ def project_version() -> str:
     return str(raw["project"]["version"])
 
 
-def copy_release_tree(stage: Path) -> None:
+def copy_release_tree(stage: Path, version: str) -> None:
     for name in ("src", "config", "tests", "integrations", "docs"):
         src = ROOT / name
         if src.exists():
@@ -76,7 +76,7 @@ def copy_release_tree(stage: Path) -> None:
         if src.exists():
             shutil.copy2(src, scripts_stage / name)
 
-    for name in ("pyproject.toml", "README.md", "README.vi.md", "README-SCH3.md", "LICENSE", "CHANGELOG.md", "RELEASE_NOTES_1.2.0.md"):
+    for name in ("pyproject.toml", "README.md", "README.vi.md", "README-SCH3.md", "LICENSE", "CHANGELOG.md", f"RELEASE_NOTES_{version}.md"):
         shutil.copy2(ROOT / name, stage / name)
 
 
@@ -369,7 +369,7 @@ def main() -> int:
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
 
-    copy_release_tree(stage)
+    copy_release_tree(stage, version)
     write_safe_release_config(stage, version)
     write_install_text(stage, version)
 

@@ -1,12 +1,12 @@
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-# ChatGPT-Actuator 1.3.0.dev0
+# ChatGPT-Actuator 1.3.0rc1
 
 ChatGPT-Actuator là một Windows MCP actuator có lớp phân quyền, cho phép ChatGPT thao tác với Windows thông qua các capability được kiểm soát rõ ràng.
 
-> **Bản ứng viên SCH3:** Nhánh này có thêm quy trình thử nghiệm cho schematic Altium Designer 26 một sheet. Đây chưa phải bản phát hành và không tự kích hoạt runtime mặc định. Xem [README-SCH3.md](README-SCH3.md) để biết phạm vi, cách chạy cục bộ và giới hạn kiểm chứng.
+> **Bản ứng viên SCH3:** Nhánh này có thêm quy trình thử nghiệm cho schematic Altium Designer 26 một sheet. Đây là prerelease candidate và không tự kích hoạt runtime mặc định. Xem [README-SCH3.md](README-SCH3.md) để biết phạm vi, cách chạy cục bộ và giới hạn kiểm chứng.
 
-Đây là source candidate `1.3.0.dev0`, tích hợp nền runtime r2 và SCH3. Release công bố vẫn là v1.0.0; nhánh này không tạo Release hoặc đổi runtime đang chạy.
+Đây là prerelease candidate [`1.3.0rc1`](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.3.0rc1), tích hợp nền runtime r2 và SCH3. Bản stable vẫn là [v1.0.0](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.0.0). Xem [release notes RC](RELEASE_NOTES_1.3.0rc1.md) để biết cách cài và giới hạn. Cài RC là lựa chọn riêng, không tự cập nhật runtime đang chạy.
 
 ## Các ràng buộc của candidate
 

@@ -39,7 +39,7 @@ if (Test-Path $ConfigPath) {
         $Changed = $true
     }
     if ($Changed) {
-        $ConfigRaw | ConvertTo-Json -Depth 20 | Set-Content -Path $ConfigPath -Encoding UTF8
+        [System.IO.File]::WriteAllText($ConfigPath, ($ConfigRaw | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
         Write-Host "Initialized release config paths for this installation."
     }
 }
@@ -90,7 +90,7 @@ $State = [ordered]@{
     autostart_requested = [bool]$EnableAutostart
     installed_at = (Get-Date).ToUniversalTime().ToString("o")
 }
-$State | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $StateDir "install-state.json") -Encoding UTF8
+[System.IO.File]::WriteAllText((Join-Path $StateDir "install-state.json"), ($State | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host ""
 Write-Host "ChatGPT-Actuator $Version setup complete."
