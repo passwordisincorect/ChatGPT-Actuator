@@ -30,5 +30,7 @@ jobs:
         shell: pwsh
         run: |
           $Version = .\.venv\Scripts\python.exe -c "import chatgpt_actuator; print(chatgpt_actuator.__version__)"
-          gh release create $env:GITHUB_REF_NAME "dist/ChatGPT-Actuator-$Version-bootstrap-portable.zip" "dist/chatgpt_actuator-$Version-py3-none-any.whl" dist/SHA256SUMS.txt dist/release-manifest.json --verify-tag --title "ChatGPT-Actuator $env:GITHUB_REF_NAME" --notes-file "RELEASE_NOTES_$Version.md"
+          $ReleaseArgs = @($env:GITHUB_REF_NAME, "dist/ChatGPT-Actuator-$Version-bootstrap-portable.zip", "dist/chatgpt_actuator-$Version-py3-none-any.whl", 'dist/SHA256SUMS.txt', 'dist/release-manifest.json', '--verify-tag', '--title', "ChatGPT-Actuator $env:GITHUB_REF_NAME", '--notes-file', "RELEASE_NOTES_$Version.md")
+          if ($Version -match '(?i)(?:a|b|rc|dev)\d') { $ReleaseArgs += @('--prerelease', '--latest=false') }
+          gh release create @ReleaseArgs
           if ($LASTEXITCODE) { throw 'Release failed' }

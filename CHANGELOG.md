@@ -1,12 +1,12 @@
 # Changelog
 
-## [1.3.0.dev0] - Source candidate
+## [1.3.0rc1] - Prerelease candidate
 
 - Bring forward the owner-scoped r2 foundation required by SCH3: checksum preconditions for existing-file writes, authenticated DOM Work Sessions, and no physical mouse/keyboard input.
 - Add physical-pin snapshots, pin contracts, connectivity diffs, intent-based lint, native ERC, staged edits and guarded commit/restore.
 - Preserve configurable loopback HTTP and stdio transport from the 1.2.0 source.
 - Package the DelphiScript bridge and preserve its qualified source fingerprint; include a sanitized AD26.10.1 single-sheet evidence summary.
-- Align metadata, verification and CI with this candidate. No release tag, activation, private native fixtures or raw logs are included.
+- Publish an opt-in prerelease candidate with versioned release notes and verified ZIP/wheel packages. Private native fixtures, raw logs and automatic runtime activation remain excluded.
 - Resolve temporary-path aliases in Windows fixtures and use configured PowerShell startup budgets on slower runners.
 
 ## [1.2.0] - 2026-10-11
