@@ -9,6 +9,7 @@ This is an **experimental prerelease**, not a stable upgrade or automatic runtim
 - Preserve configurable stdio and loopback HTTP transport, with optional Tailscale Funnel/OAuth and OpenAI Tunnel connections.
 - Preserve product PowerShell timeout and resource limits. Live PowerShell tests receive a 60-second budget; the intentional timeout test stays at 0.4 seconds. `powershell_info` adds `timed_out`, `cancelled`, `duration_seconds`, and `output_truncated` while retaining existing fields. Tests parse JSON, validate `PSVersion`, and cover timeout with exit code 0.
 - Include version-matched release notes in the bootstrap ZIP and mark candidate releases as prereleases.
+- Write setup JSON as UTF-8 without a BOM so fresh Windows PowerShell installations can load their configuration.
 
 ## Install separately on Windows
 
