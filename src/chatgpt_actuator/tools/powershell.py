@@ -49,6 +49,10 @@ class PowerShellService:
             "child_tree_bounded":True,
             "filesystem_sandbox_applies": False,
             "exit_code": result["exit_code"],
+            "timed_out": result["timed_out"],
+            "cancelled": result["cancelled"],
+            "duration_seconds": result["duration_seconds"],
+            "output_truncated": result["output_truncated"],
             "stdout": result["stdout"],
             "stderr": result["stderr"],
         }
