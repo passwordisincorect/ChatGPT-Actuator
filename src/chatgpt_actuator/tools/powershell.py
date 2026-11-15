@@ -38,7 +38,8 @@ class PowerShellService:
             "Platform=[System.Environment]::OSVersion.Platform.ToString()"
             "} | ConvertTo-Json -Compress"
         )
-        result = self._execute(script, cwd=str(self.default_cwd), timeout_seconds=10.0, audit_action="powershell_info")
+        timeout = min(self.config.max_timeout_seconds, max(10.0, self.config.default_timeout_seconds))
+        result = self._execute(script, cwd=str(self.default_cwd), timeout_seconds=timeout, audit_action="powershell_info")
         return {
             "executable": self.executable,
             "default_cwd": str(self.default_cwd),

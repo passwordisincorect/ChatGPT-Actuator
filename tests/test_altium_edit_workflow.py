@@ -73,7 +73,7 @@ def _cross_process_publish(destination, stage, start, results):
 class AltiumEditWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        root = Path(self.temp.name)
+        root = Path(self.temp.name).resolve()
         self.projects = root / "projects"
         self.projects.mkdir()
         self.state = root / "private-state"
@@ -613,7 +613,7 @@ class AltiumEditWorkflowTests(unittest.TestCase):
     def test_destination_publication_lock_serializes_two_processes(self):
         context = multiprocessing.get_context("spawn")
         with tempfile.TemporaryDirectory(prefix="altium-edit-publish-race-") as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             destination = root / "output"
             start = context.Event()
             results = context.Queue()

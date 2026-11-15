@@ -7,6 +7,7 @@
 - Preserve configurable loopback HTTP and stdio transport from the 1.2.0 source.
 - Package the DelphiScript bridge and preserve its qualified source fingerprint; include a sanitized AD26.10.1 single-sheet evidence summary.
 - Align metadata, verification and CI with this candidate. No release tag, activation, private native fixtures or raw logs are included.
+- Resolve temporary-path aliases in Windows fixtures and use configured PowerShell startup budgets on slower runners.
 
 ## [1.2.0] - 2026-10-11
 

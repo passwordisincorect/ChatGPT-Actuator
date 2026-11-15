@@ -20,12 +20,12 @@ class AltiumTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='actuator-altium-')
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.state_temp = tempfile.TemporaryDirectory(prefix='actuator-altium-private-state-')
         self.addCleanup(self.state_temp.cleanup)
         config = EDAConfig(True, True, True, False, (str(self.root),), '', '', .02, 1, 200000)
         self.api = AltiumAdapter(config, AuditLogger(False, str(self.root/'audit.log')), PathGuard((self.root,)),
-                                 lambda: Path('X2.EXE'), state_dir=self.state_temp.name,
+                                 lambda: Path('X2.EXE'), state_dir=Path(self.state_temp.name).resolve(),
                                  excluded_roots=(self.root,))
         self.library = self.root/'parts.SchLib'
         self.library.write_bytes(b'fixture')

@@ -38,6 +38,7 @@ class AltiumStateIsolationTests(unittest.TestCase):
 
     def test_generic_filesystem_cannot_read_or_write_private_records_or_caches(self):
         with tempfile.TemporaryDirectory(prefix="actuator-altium-state-") as tmp:
+            tmp = str(Path(tmp).resolve())
             service, project, library_root, _, state_dir, audit = self.make_service(tmp)
             api = service.altium
             operation = api._op_path("1" * 32)
@@ -60,6 +61,7 @@ class AltiumStateIsolationTests(unittest.TestCase):
 
     def test_original_project_and_library_guards_cannot_read_private_extracted_sources(self):
         with tempfile.TemporaryDirectory(prefix="actuator-altium-cache-") as tmp:
+            tmp = str(Path(tmp).resolve())
             service, _, _, _, state_dir, _ = self.make_service(tmp)
             extracted = service.altium.state_guard.resolve_target(
                 state_dir / "libraries" / ("f" * 64) / "parts.SchLib")
@@ -73,6 +75,7 @@ class AltiumStateIsolationTests(unittest.TestCase):
 
     def test_private_state_works_under_delegation_but_project_and_library_roots_remain_scoped(self):
         with tempfile.TemporaryDirectory(prefix="actuator-altium-delegation-") as tmp:
+            tmp = str(Path(tmp).resolve())
             service, project, _, library, state_dir, _ = self.make_service(tmp)
             workspace = Path(tmp) / "delegated-workspace"
             workspace.mkdir()
@@ -102,7 +105,7 @@ class AltiumStateIsolationTests(unittest.TestCase):
         )
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory(prefix="actuator-altium-overlap-") as tmp:
-                base = Path(tmp)
+                base = Path(tmp).resolve()
                 if case == "state_below_root":
                     project = base / "project"
                     library_root = base / "library"
