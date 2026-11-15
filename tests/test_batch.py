@@ -50,17 +50,25 @@ class BatchExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["results"][1]["result"]["received"], "abc")
 
     async def test_bad_reference_fails_safely(self):
+        called = []
         result = await execute_batch(
             [
                 {"tool": "make"},
                 {"tool": "consume", "arguments": {"value": {"$ref": "9.result"}}},
             ],
-            {"make": lambda: {"x": 1}, "consume": lambda value: value},
+            {
+                "make": lambda: called.append("make") or {"x": 1},
+                "consume": lambda value: called.append("consume") or value,
+            },
         )
 
-        self.assertEqual(result["failed"], 1)
-        self.assertFalse(result["results"][1]["ok"])
-        self.assertIn("unavailable action index", result["results"][1]["error"]["message"])
+        # Invalid references are rejected statically before any action is dispatched.
+        self.assertEqual(called, [])
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["completed"], 0)
+        self.assertEqual(result["preflight"]["state"], "rejected")
+        self.assertEqual(result["preflight"]["error"]["phase"], "preflight")
+        self.assertEqual(result["preflight"]["error"]["delivery_state"], "not_dispatched")
 
     async def test_sequential_stops_on_error(self):
         called = []
@@ -116,7 +124,7 @@ class BatchExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["results"][0]["result"], "yes")
 
     async def test_parallel_readonly_rejects_non_readonly_tool(self):
-        with self.assertRaises(PermissionError):
+        with self.assertRaisesRegex(ValueError, "conservative read-only tools"):
             await execute_batch(
                 [{"tool": "filesystem_write_text", "arguments": {"path": "x", "content": "y"}}],
                 {"filesystem_write_text": lambda **_: None},

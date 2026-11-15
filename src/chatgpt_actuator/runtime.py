@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace, fields
 import json
 import os
 from pathlib import Path
@@ -69,6 +69,15 @@ class RuntimeManager:
 
     @staticmethod
     def _build_bundle(config: AppConfig) -> RuntimeBundle:
+        # Immutable background restriction also applies to direct service proxies.
+        config=replace(config,
+            mouse=replace(config.mouse,enabled=False),
+            keyboard=replace(config.keyboard,enabled=False),
+            verified_input=replace(config.verified_input,enabled=False),
+            process=replace(config.process,allow_start=False),
+            window=replace(config.window,**{f.name:False for f in fields(config.window) if f.name.startswith('allow_')}),
+            clipboard=replace(config.clipboard,allow_write=False),
+            ui_automation=replace(config.ui_automation,**{f.name:False for f in fields(config.ui_automation) if f.name.startswith('allow_')}))
         from .tools import (
             BrowserDOMService,
             ClipboardService,
@@ -85,6 +94,7 @@ class RuntimeManager:
         )
 
         audit = AuditLogger(config.logging_enabled, config.log_file)
+        from .uia_worker import UIAWorkerService
         return RuntimeBundle(
             config=config,
             audit=audit,
@@ -97,9 +107,9 @@ class RuntimeManager:
             keyboard=KeyboardService(config.keyboard, audit),
             clipboard=ClipboardService(config.clipboard, audit),
             verified_input=VerifiedInputService(config.verified_input, audit),
-            uia=UIAutomationService(config.ui_automation, audit),
+            uia=UIAWorkerService(config.ui_automation, audit),
             dom=BrowserDOMService(config.browser_dom, audit),
-            eda=EDAService(config.eda, audit),
+            eda=EDAService(config.eda, audit, excluded_roots=config.filesystem.allowed_roots),
         )
 
     @property
@@ -119,7 +129,18 @@ class RuntimeManager:
 
     def get_service(self, name: str):
         with self._lock:
-            return getattr(self._bundle, name)
+            service=getattr(self._bundle,name)
+            if name in {'dom','uia'}:
+                from .resource_limits import validated
+                security=self.raw_config().get('security',{})
+                limits=validated(security.get('resource_limits'))
+                if name=='dom':
+                    override=security.get('browser_resource_limits',{})
+                    if not isinstance(override,dict) or set(override)-{'max_child_processes'}:
+                        raise ValueError('Only browser child-process budget may be overridden')
+                    limits=validated({**limits,**override})
+                service.resource_limits=limits
+            return service
 
     def proxy(self, name: str) -> DynamicServiceProxy:
         return DynamicServiceProxy(self, name)
@@ -214,6 +235,7 @@ class RuntimeManager:
             "name": cfg.name,
             "version": cfg.version,
             "generation": self.generation,
+            "execution_policy": "scoped_desktop_patterns" if self.raw_config().get('security',{}).get('desktop_uia',{}).get('enabled') else "background_only",
             "capabilities": {
                 "filesystem": {
                     "enabled": cfg.filesystem.enabled,

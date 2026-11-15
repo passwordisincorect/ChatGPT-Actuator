@@ -1,5 +1,8 @@
+import json
 import tempfile
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
 from pathlib import Path
 
 from chatgpt_actuator.audit import AuditLogger
@@ -20,8 +23,8 @@ class PowerShellTests(unittest.TestCase):
             executable="powershell.exe",
             default_cwd=str(root),
             allowed_working_roots=(str(root),),
-            max_timeout_seconds=10.0,
-            default_timeout_seconds=3.0,
+            max_timeout_seconds=60.0,
+            default_timeout_seconds=60.0,
             max_output_bytes=max_output_bytes,
             max_script_chars=100000,
         )
@@ -31,25 +34,60 @@ class PowerShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             service = self.make_service(Path(tmp))
             info = service.info()
+            self.assertFalse(info["timed_out"], info)
+            self.assertFalse(info["cancelled"], info)
+            self.assertFalse(info["output_truncated"], info)
+            self.assertGreaterEqual(info["duration_seconds"], 0)
             self.assertEqual(info["exit_code"], 0)
-            self.assertIn("PSVersion", info["stdout"])
-            self.assertNotIn('"PSVersion":null', info["stdout"])
+            payload = json.loads(info["stdout"])
+            self.assertRegex(payload["PSVersion"], r"^\d+\.\d+(?:\.\d+)*$")
             self.assertEqual(info["stderr"], "")
             self.assertFalse(info["filesystem_sandbox_applies"])
+
+    def test_info_honors_configured_timeout_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self.make_service(Path(tmp))
+            for default, maximum, expected in [(20.0, 60.0, 20.0), (3.0, 5.0, 5.0)]:
+                with self.subTest(default=default, maximum=maximum):
+                    service.config = replace(service.config, default_timeout_seconds=default,
+                                             max_timeout_seconds=maximum)
+                    with patch.object(service, "_execute", return_value={
+                        "exit_code": 0, "stdout": "fixture", "stderr": "",
+                        "timed_out": False, "cancelled": False,
+                        "duration_seconds": 0.1, "output_truncated": False,
+                    }) as execute:
+                        service.info()
+                    self.assertEqual(execute.call_args.kwargs["timeout_seconds"], expected)
+
+    def test_info_preserves_execution_status_with_zero_exit_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self.make_service(Path(tmp))
+            for flag in ("timed_out", "cancelled", "output_truncated"):
+                with self.subTest(flag=flag):
+                    result = {
+                        "exit_code": 0, "stdout": "", "stderr": "",
+                        "timed_out": False, "cancelled": False,
+                        "duration_seconds": 60.125, "output_truncated": False,
+                    }
+                    result[flag] = True
+                    with patch.object(service, "_execute", return_value=result):
+                        info = service.info()
+                    for key, value in result.items():
+                        self.assertEqual(info[key], value, info)
 
     def test_run_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = self.make_service(Path(tmp))
             result = service.run("Write-Output 'hello-v04'")
             self.assertEqual(result["exit_code"], 0)
-            self.assertFalse(result["timed_out"])
+            self.assertFalse(result["timed_out"], result)
             self.assertIn("hello-v04", result["stdout"])
 
     def test_nonzero_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             service = self.make_service(Path(tmp))
             result = service.run("Write-Error 'expected-test-error'; exit 7")
-            self.assertEqual(result["exit_code"], 7)
+            self.assertEqual(result["exit_code"], 7, result)
             self.assertIn("expected-test-error", result["stderr"])
 
     def test_cwd_outside_allowed_roots_is_denied(self):
@@ -68,7 +106,7 @@ class PowerShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             service = self.make_service(Path(tmp), max_output_bytes=64)
             result = service.run("Write-Output ('x' * 1000)")
-            self.assertTrue(result["output_truncated"])
+            self.assertTrue(result["output_truncated"], result)
             self.assertLessEqual(len(result["stdout"].encode("utf-8")), 64)
 
 

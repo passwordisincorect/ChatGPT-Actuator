@@ -31,3 +31,19 @@ config/connection-profiles.local.json
 integrations/tailscale_gateway/*.sqlite3
 integrations/tailscale_gateway/*.jsonl
 integrations/tailscale_gateway/*.log
+
+# Local native evidence, runtime slots and private credentials
+reports/
+private/
+runtime-versions/
+runtime-current.json
+runtime-update.json
+config/*.local.json
+config/*.sqlite3
+config/*.sqlite3-*
+*.SchDoc
+*.SchLib
+*.IntLib
+*.PrjPcb
+*.PrjPcbStructure
+*.PcbDoc

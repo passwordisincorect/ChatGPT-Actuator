@@ -9,6 +9,18 @@ from chatgpt_actuator.account_bootstrap import AccountBootstrap
 
 
 class AccountBootstrapTests(unittest.TestCase):
+    @staticmethod
+    def json_keys(value: object) -> set[str]:
+        keys: set[str] = set()
+        if isinstance(value, dict):
+            keys.update(str(key).casefold() for key in value)
+            for child in value.values():
+                keys.update(AccountBootstrapTests.json_keys(child))
+        elif isinstance(value, list):
+            for child in value:
+                keys.update(AccountBootstrapTests.json_keys(child))
+        return keys
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -32,8 +44,34 @@ class AccountBootstrapTests(unittest.TestCase):
     def test_export_creates_portable_non_secret_pack(self) -> None:
         result = self.bootstrap.export()
         self.assertTrue(result["exists"])
-        self.assertEqual(result["portable_file_count"], 5)
+        self.assertEqual(result["portable_file_count"], 6)
         self.assertFalse(result["secrets_included"])
+        self.assertEqual(
+            {Path(path).name for path in result["files"].values()},
+            {
+                "profile.json",
+                "plugins.json",
+                "projects.json",
+                "preferences.json",
+                "context.json",
+                "bootstrap.md",
+            },
+        )
+        for file_path in result["files"].values():
+            if Path(file_path).suffix == ".json":
+                payload = json.loads(Path(file_path).read_text(encoding="utf-8"))
+                self.assertTrue(
+                    self.json_keys(payload).isdisjoint(
+                        {
+                            "access_token",
+                            "refresh_token",
+                            "api_key",
+                            "cookie",
+                            "cookies",
+                            "session_token",
+                        }
+                    )
+                )
 
         profile = json.loads(self.bootstrap.profile_path.read_text(encoding="utf-8"))
         self.assertEqual(profile["services"]["actuator"]["version"], "1.0.0")

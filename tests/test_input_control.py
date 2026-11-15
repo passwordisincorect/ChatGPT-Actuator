@@ -50,17 +50,23 @@ class InputControlTests(unittest.TestCase):
 
     def test_mouse_position_and_move_roundtrip(self):
         service = self.make_mouse()
-        start = service.position()
-        x, y = start["x"], start["y"]
-        bounds = start["virtual_screen"]
-        candidate_x = x + 1 if x + 1 < bounds["left"] + bounds["width"] else x - 1
-        candidate_y = y
-        try:
-            moved = service.move(candidate_x, candidate_y, duration_ms=0)
-            self.assertEqual(moved["to"]["x"], candidate_x)
-            self.assertEqual(moved["to"]["y"], candidate_y)
-        finally:
-            service.move(x, y, duration_ms=0)
+        cursor = [-100, 300]
+        bounds = {"left": -1920, "top": -200, "width": 3840, "height": 1280}
+        with (
+            patch.object(service, "_virtual_bounds", return_value=bounds),
+            patch("chatgpt_actuator.tools.input_control.win32api.GetCursorPos", side_effect=lambda: tuple(cursor)),
+            patch("chatgpt_actuator.tools.input_control.win32api.SetCursorPos", side_effect=lambda point: cursor.__setitem__(slice(None), point)) as move,
+        ):
+            start = service.position()
+            moved = service.move(-99, 300, duration_ms=0)
+            move.assert_called_once_with((-99, 300))
+            self.assertEqual(start["x"], -100)
+            self.assertEqual(moved["from"], {"x": -100, "y": 300})
+            self.assertEqual(moved["to"], {"x": -99, "y": 300})
+            with self.assertRaises(ValueError):
+                service.move(bounds["left"] - 1, 300, duration_ms=0)
+            self.assertEqual(cursor, [-99, 300])
+            self.assertEqual(move.call_count, 1)
 
     def test_mouse_click_uses_expected_flags(self):
         service = self.make_mouse()

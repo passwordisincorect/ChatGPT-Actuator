@@ -21,7 +21,8 @@ class RoutingPolicyEngine:
     VALID_ROUTES = {"direct", "actuator", "orchestrator"}
 
     def __init__(self, policy_path: str | Path | None = None) -> None:
-        workspace_root = Path(__file__).resolve().parents[3]
+        from .config import project_root
+        workspace_root = project_root().parent
         configured = policy_path or os.environ.get("CHATGPT_ROUTING_POLICY")
         self.policy_path = (
             Path(configured).expanduser()
