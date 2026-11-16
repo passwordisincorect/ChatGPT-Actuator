@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import threading
 import unittest
 
 from chatgpt_actuator.batch import MAX_BATCH_ACTIONS, execute_batch
@@ -143,20 +143,22 @@ class BatchExecutorTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_parallel_readonly_runs_allowed_actions_concurrently(self):
-        def delayed_info():
-            time.sleep(0.08)
+        barrier = threading.Barrier(2)
+
+        def synchronized_info():
+            barrier.wait(timeout=5)
             return {"ok": True}
 
-        started = time.perf_counter()
         result = await execute_batch(
             [{"tool": "system_info"}, {"tool": "system_info"}],
-            {"system_info": delayed_info},
+            {"system_info": synchronized_info},
             mode="parallel_readonly",
         )
-        elapsed = time.perf_counter() - started
 
         self.assertEqual(result["failed"], 0)
-        self.assertLess(elapsed, 0.15)
+        self.assertEqual(result["succeeded"], 2)
+        self.assertEqual(barrier.parties, 2)
+        self.assertEqual(barrier.n_waiting, 0)
 
     async def test_validation_rejects_nested_unknown_and_oversized_batches(self):
         handlers = {"system_info": lambda: {}}

@@ -1,6 +1,6 @@
 [English](README.md) | [Tiếng Việt](README.vi.md)
 
-# ChatGPT-Actuator 1.3.0rc1
+# ChatGPT-Actuator 1.3.0rc2
 
 ChatGPT-Actuator is a permission-gated Windows MCP actuator for ChatGPT.
 
@@ -8,7 +8,7 @@ ChatGPT-Actuator is a permission-gated Windows MCP actuator for ChatGPT.
 
 This source candidate brings the r2 runtime foundation and SCH3 schematic tools into the repository. It retains the optional Tailscale Funnel/OAuth and OpenAI Tunnel connections from 1.2.0.
 
-**Release channels:** This source is **1.3.0rc1**, an experimental [prerelease candidate](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.3.0rc1). The stable release remains [v1.0.0](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.0.0). See [RC release notes](RELEASE_NOTES_1.3.0rc1.md) for installation and limits; the [CI workflow](.github/workflows/ci.yml) validates the tracked code. Installing an RC is an explicit choice and does not update an existing runtime automatically.
+**Release channels:** This source is **1.3.0rc2**, an experimental [prerelease candidate](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.3.0rc2). The stable release remains [v1.0.0](https://github.com/passwordisincorect/ChatGPT-Actuator/releases/tag/v1.0.0). See [RC release notes](RELEASE_NOTES_1.3.0rc2.md) for installation and limits; the [CI workflow](.github/workflows/ci.yml) validates the tracked code. Installing an RC is an explicit choice and does not update an existing runtime automatically.
 
 ## Candidate integration contracts
 

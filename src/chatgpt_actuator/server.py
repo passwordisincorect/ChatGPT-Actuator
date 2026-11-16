@@ -804,9 +804,12 @@ async def dom_list_tabs() -> dict:
     return await dom.list_tabs()
 
 @mcp.tool(title="Attach DOM to a selected browser tab", annotations=WRITE_STATEFUL)
-async def dom_browser_attach(cdp_url: str, tab_url: str | None = None, tab_id: str | None = None,require_default_session:bool=False) -> dict:
-    """Attach one uniquely matching HTTP/HTTPS page through an enabled loopback CDP endpoint. cdp_url accepts HTTP root or ws://loopback:port/devtools/browser/id for Edge approval mode; browser permission remains required, with defaults preserved. Does not enable debugging, attach other pages, or restart the browser."""
+async def dom_browser_attach(cdp_url: str = 'auto', tab_url: str | None = None, tab_id: str | None = None,require_default_session:bool=False) -> dict:
+    """Use auto to discover current Edge and handle debugging setup/consent under the owner's saved local grant, without asking again or restarting Edge. Omit tab selectors to receive metadata candidates, then choose a unique tab_id or tab_url on the reused connection. Explicit loopback endpoints retain manual permission behavior."""
     _require_browser_default(require_default_session)
+    if isinstance(cdp_url,str) and cdp_url.strip().casefold()=='auto':
+        policy=runtime.raw_config().get('security',{}).get('browser_auto_connect',{})
+        return await dom.auto_attach_browser(policy,tab_url,tab_id)
     return await dom.attach_browser(cdp_url,tab_url,tab_id)
 
 @mcp.tool(title="Find available local DOM browser sessions", annotations=READ_ONLY)

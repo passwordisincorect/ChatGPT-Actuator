@@ -1,6 +1,6 @@
 # Altium schematic tools (SCH3 candidate)
 
-**Experimental `1.3.0rc1` prerelease candidate; no automatic runtime activation.** This branch adds an opt-in workflow for standalone, single-sheet `.PrjPcb` projects in Altium Designer 26. It does not qualify multi-sheet designs, PCB layout, or every electrical rule. Review this guide and the [validation summary](docs/ALTIUM-SCH3-VALIDATION.md) before use.
+**Experimental `1.3.0rc2` prerelease candidate; no automatic runtime activation.** This branch includes owner-granted automatic CDP connection for the current Edge profile and an opt-in workflow for standalone, single-sheet `.PrjPcb` projects in Altium Designer 26. It does not qualify multi-sheet designs, PCB layout, or every electrical rule. Review the [RC2 release notes](RELEASE_NOTES_1.3.0rc2.md), this guide, and the [validation summary](docs/ALTIUM-SCH3-VALIDATION.md) before use.
 
 ## Windows setup and configuration
 
@@ -8,7 +8,7 @@ The candidate was developed and exercised on Windows with Python 3.12 and Altium
 
 The public template enables read-only EDA access within configured project roots; editing is disabled. In the private config, review `eda.enabled` and `eda.allow_read`, enable `eda.allow_edit` only when needed, and set `eda.allowed_project_roots` to the project directories the adapter may access, `eda.altium_library_roots` to permitted libraries, and `eda.altium_executable` to the local AD26 executable. Keep `allow_manufacturing` disabled for this schematic workflow. Never put human login credentials, license data, or private machine paths in the repository.
 
-The documented source package version for this candidate is `1.3.0rc1`. The offline verifier `scripts/sch3_offline_verify.py` is included in the source tree. Private native harnesses, fixtures, and raw evidence logs are deliberately not included; native qualification is therefore not reproducible from this public repository alone.
+The documented source package version for this candidate is `1.3.0rc2`. The offline verifier `scripts/sch3_offline_verify.py` is included in the source tree. Private native harnesses, fixtures, and raw evidence logs are deliberately not included; native qualification is therefore not reproducible from this public repository alone. RC2 adds no new Altium qualification; the existing seven-file fingerprint remains the same and Altium was not rerun.
 
 This candidate retains owner checks, source hashes, isolated staging, request keys, and operation recovery. All native behavior described below is scoped to the evidence in the validation summary; historical evidence is not proof for arbitrary projects or future source changes.
 
