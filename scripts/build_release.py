@@ -85,6 +85,7 @@ def write_safe_release_config(stage: Path, version: str) -> None:
     raw = json.loads(path.read_text(encoding="utf-8"))
 
     raw["server"]["version"] = version
+    raw.setdefault("security", {}).pop("browser_auto_connect", None)
 
     fs = raw["filesystem"]
     fs["enabled"] = True
@@ -198,6 +199,7 @@ def validate_release_tree(stage: Path) -> None:
     raw = json.loads(config_path.read_text(encoding="utf-8"))
 
     checks = {
+        "dom.no_private_auto_grant": "browser_auto_connect" not in raw.get("security", {}),
         "filesystem.read_only": raw["filesystem"]["read_only"] is True,
         "filesystem.write_disabled": all(
             raw["filesystem"][key] is False

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.0rc2] - Prerelease candidate
+
+- Add owner-granted `dom_browser_attach(cdp_url="auto")` for the current personal Edge profile, including current endpoint discovery, correlated native consent handling, and bounded UIA setup when remote debugging is off.
+- Preserve the running Edge process and existing tabs; return metadata for explicit tab selection, reuse the connection within its Work Session, and revalidate after reconnects without replaying actions.
+- Keep automatic access disabled in public defaults. It requires a local grant for the authenticated owner, verified Edge user-data directory, and `Default` profile; temporary settings-window focus must also be authorized.
+- Exercise the consent dialog and off-to-on UIA path on Edge 157, and smoke metadata selection, Drive reading, reuse, and reconnect on the current signed-in Edge session. These are local Windows observations, not cross-version coverage.
+- Add no new Altium qualification. Existing seven-file EDA qualification remains unchanged; native Altium was not rerun.
+- Retain the r2 runtime as a local rollback option. Installing this prerelease does not update an existing runtime automatically.
+
 ## [1.3.0rc1] - Prerelease candidate
 
 - Fix Windows PowerShell setup JSON encoding so fresh ZIP installations load their configuration without a UTF-8 BOM error.

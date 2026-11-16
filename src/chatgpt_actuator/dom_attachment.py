@@ -110,16 +110,36 @@ def attachment_wait(method,args,kwargs,ordinary):
 
 class SelectedContext:
     def __init__(self,context,page,register):
-        self.context=context;self.selected=page;self.owned=[];self.register=register
-        self.listeners=[]
+        self.context=context;self.selected=page;self.owned=[];self.retained=[];self.register=register
+        self.listeners=[];self._watched={}
         register(page);self._watch(page)
     def _watch(self,page):
+        if page in self._watched:return
         def popup(child):
             self.owned.append(child);self.register(child);self._watch(child)
             for listener in list(self.listeners):listener(child)
-        page.on('popup',popup)
+        self._watched[page]=popup;page.on('popup',popup)
+    def retarget(self,page):
+        """Select another existing page without closing the prior selection."""
+        if page is self.selected:return self.selected
+        previous=self.selected
+        if previous not in self.retained:self.retained.append(previous)
+        # A retired original tab no longer owns popups opened later by the user.
+        # Owned children keep their watcher even when one becomes selected.
+        if previous not in self.owned:self._unwatch(previous)
+        self.selected=page;self.register(page);self._watch(page)
+        return previous
+    def _unwatch(self,page):
+        handler=self._watched.pop(page,None)
+        if handler is None:return
+        try:page.remove_listener('popup',handler)
+        except Exception:pass
     @property
-    def pages(self):return [p for p in [self.selected,*self.owned] if not p.is_closed()]
+    def pages(self):
+        pages=[]
+        for page in [self.selected,*self.owned]:
+            if page not in pages and not page.is_closed():pages.append(page)
+        return pages
     def on(self,event,listener):
         if event=='page':self.listeners.append(listener)
     def remove_listener(self,event,listener):
@@ -130,4 +150,5 @@ class SelectedContext:
         for page in list(self.owned):
             try:await page.close()
             except Exception:pass
-        # Never close the selected existing page or its browser/context.
+        for page in list(self._watched):self._unwatch(page)
+        # Never close a previously selected original page or its browser/context.

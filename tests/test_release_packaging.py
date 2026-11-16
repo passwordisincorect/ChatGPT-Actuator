@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,22 @@ SPEC.loader.exec_module(build_release)
 
 
 class ReleasePackagingTests(unittest.TestCase):
+    def test_release_strips_private_browser_grant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp)
+            (stage / "config").mkdir()
+            raw = json.loads((ROOT / "config/config.json").read_text(encoding="utf-8"))
+            raw.setdefault("security", {})["browser_auto_connect"] = {
+                "enabled": True, "owner": "private-owner", "allow_temporary_focus": True,
+                "user_data_dir": "private-profile", "profile_directory": "Default",
+            }
+            config = stage / "config/config.json"
+            config.write_text(json.dumps(raw), encoding="utf-8")
+            build_release.write_safe_release_config(stage, "1.3.0rc2")
+            exported = json.loads(config.read_text(encoding="utf-8"))
+            self.assertNotIn("browser_auto_connect", exported["security"])
+            build_release.validate_release_tree(stage)
+
     def test_packages_notes_for_project_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

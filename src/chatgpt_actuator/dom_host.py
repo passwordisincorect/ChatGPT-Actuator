@@ -75,6 +75,13 @@ class DOMExecutionHost:
     async def _idle_watch(self):
         while True:
             await asyncio.sleep(min(5.0,max(.05,self.idle_seconds/2)))
+            if not self._active_calls:
+                async with self._admission_lock:
+                    service=self.runtime.get_service('dom')
+                    expire=getattr(service,'expire_pending_auto_connections',None)
+                    if expire is not None:
+                        try:await expire()
+                        except Exception:pass  # Retry owned transport cleanup at the next idle tick.
             if self._active_calls or time.monotonic()-self._last_activity<self.idle_seconds:
                 continue
             async with self._admission_lock:

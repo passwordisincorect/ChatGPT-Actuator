@@ -34,6 +34,7 @@ class BrowserDOMService:
         self._browser = None
         self._session_contexts = {}
         self._external_sessions = {}
+        self._pending_auto_sessions = {}
         self._connect_lock: asyncio.Lock | None = None
         self._connected_endpoint: str | None = None
         self._stable_tabs: dict[str, object] = {}
@@ -217,6 +218,8 @@ class BrowserDOMService:
                                     self._external_sessions,key,self._is_allowed_url)
 
     async def attach_browser(self,cdp_url,tab_url=None,tab_id=None):
+        if isinstance(cdp_url,str) and cdp_url.strip().casefold()=='auto':
+            raise ValueError('Automatic attachment requires the local browser_auto_connect policy')
         self._require_mutation('allow_navigation','DOM browser attachment')
         if not self.config.visible_browser:raise PermissionError('Desktop browser access is not enabled by owner policy')
         if tab_url is not None:self._require_allowed_url(tab_url)
@@ -229,7 +232,8 @@ class BrowserDOMService:
         if principal is None or principal.session=='default':raise PermissionError('Authenticated Work Session required')
         key=(principal.owner,principal.session);url=endpoint(cdp_url)
         if key in self._session_contexts:raise ValueError('Detach the current DOM session first')
-        if any(urlsplit(item['endpoint']).port==urlsplit(url).port for item in self._external_sessions.values()):raise PermissionError('This loopback browser port is already leased to a session')
+        pending=getattr(self,'_pending_auto_sessions',{})
+        if any(urlsplit(item['endpoint']).port==urlsplit(url).port for item in [*self._external_sessions.values(),*pending.values()]):raise PermissionError('This loopback browser port is already leased to a session')
         from ..resource_limits import validated
         if len(self._session_contexts)>=getattr(self,'resource_limits',validated())['max_browser_contexts']:raise PermissionError('RESOURCE_LIMIT: browser context budget reached')
         from playwright.async_api import async_playwright
@@ -260,6 +264,286 @@ class BrowserDOMService:
             return {'attached':True,'tab_ref':self._tab_ref_for_page(page),'url':page.url,'mode':'selected_cdp_tab','existing_tabs_closed_on_release':False,'binding':self._binding(page,key)}
         except BaseException:
             await driver.stop();raise
+
+    async def auto_attach_browser(self, policy, tab_url=None, tab_id=None):
+        """Attach to the owner's current Edge profile without exposing an endpoint."""
+        self._require_mutation('allow_navigation','DOM browser attachment')
+        if not self.config.visible_browser:
+            raise PermissionError('Desktop browser access is not enabled by owner policy')
+        if tab_url is not None:
+            self._require_allowed_url(tab_url)
+        if tab_id is not None and (not isinstance(tab_id,str) or not 1<=len(tab_id)<=128):
+            raise ValueError('Bounded tab ID required')
+        from ..tool_policy import principal_context
+        principal=principal_context.get()
+        owner_id=getattr(principal,'owner',None)
+        session=getattr(principal,'session',None)
+        if not isinstance(owner_id,str) or not owner_id or not isinstance(session,str) or session=='default':
+            raise PermissionError('Authenticated Work Session required')
+        key=(owner_id,session)
+        selector=tab_url is not None or tab_id is not None
+        if tab_url is not None and tab_id is not None:
+            raise ValueError('Choose one tab selector')
+        from ..resource_limits import validated
+        budget=getattr(self,'resource_limits',None) or validated()
+        other_leases=[item for lease_key,item in self._external_sessions.items()
+                      if lease_key!=key and item.get('endpoint')]
+        pending=self._pending_auto_sessions
+        other_leases.extend(item for lease_key,item in pending.items() if lease_key!=key)
+        from urllib.parse import urlsplit
+        def port_of(item):
+            try:return urlsplit(item.get('endpoint','')).port
+            except ValueError:return None
+
+        from .. import dom_auto_connect
+        def check_other_leases():
+            discovered=dom_auto_connect.discover(policy,owner_id)
+            discovered_port=port_of(discovered)
+            for item in other_leases:
+                leased_binding=item.get('binding') or {}
+                same_identity=(
+                    (discovered.get('pid') is not None and leased_binding.get('pid')==discovered.get('pid'))
+                    or (discovered.get('user_data_dir') and discovered.get('profile_directory')
+                        and leased_binding.get('user_data_dir')==discovered.get('user_data_dir')
+                        and leased_binding.get('profile_directory')==discovered.get('profile_directory'))
+                )
+                if same_identity or (discovered_port is not None and port_of(item)==discovered_port):
+                    raise PermissionError('This Edge profile or CDP port is already leased to another owner/session')
+            return discovered
+
+        current=self._external_sessions.get(key)
+        waiting=pending.get(key)
+        if current is not None and not current.get('auto'):
+            raise ValueError('Detach the current DOM session before automatic attachment')
+        if current is None and waiting is None and key in self._session_contexts:
+            raise ValueError('Detach the current DOM session before automatic attachment')
+        if current is None and waiting is None:
+            if len(self._session_contexts)+len(pending)>=budget['max_browser_contexts']:
+                raise PermissionError('RESOURCE_LIMIT: browser context budget reached')
+
+        if current is not None and current.get('auto'):
+            alive=self._auto_transport_alive(current)
+            binding=current.get('binding')
+            if alive and binding:
+                try:
+                    refreshed=dom_auto_connect.validate(binding,policy,owner_id)
+                    alive=True
+                    binding=refreshed
+                    current['binding']=refreshed
+                except Exception:
+                    alive=False
+            if alive:
+                if not selector:
+                    return await self._auto_candidates(current,selected=False)
+                return await self._select_auto_page(current,tab_url,tab_id,key)
+            # The old CDP transport is stale. Retire its references and stop
+            # only Playwright's client before making one fresh connection.
+            released=await self.release_session(owner_id,session)
+            current=None
+            if released.get('resource_cleanup')=='pending':
+                waiting=pending.get(key)
+        if waiting is not None:
+            try:
+                if waiting.get('cleanup_only'):
+                    if not await self._stop_pending_auto(key,waiting):
+                        raise RuntimeError('Pending Playwright driver cleanup remains incomplete')
+                    waiting=None
+                else:
+                    if not self._auto_transport_alive(waiting):
+                        raise RuntimeError('Pending Edge CDP transport disconnected')
+                    refreshed=dom_auto_connect.validate(waiting['binding'],policy,owner_id)
+                    if refreshed.get('endpoint')!=waiting.get('endpoint'):
+                        raise PermissionError('Current Edge debugging endpoint changed; pending attachment was retired')
+                    waiting['binding']=refreshed
+                    waiting['last_activity']=time.monotonic()
+            except asyncio.CancelledError:
+                await self._stop_pending_auto(key,waiting)
+                raise
+            except Exception:
+                if not await self._stop_pending_auto(key,waiting):
+                    waiting['last_activity']=time.monotonic()
+                    raise
+                waiting=None
+        if waiting is None:
+            check_other_leases()
+            binding=await dom_auto_connect.prepare(policy,owner_id,budget)
+            binding_port=port_of(binding)
+            if binding_port is not None and any(port_of(item)==binding_port for item in other_leases):
+                raise PermissionError('This loopback browser port is already leased to another owner/session')
+            from playwright.async_api import async_playwright
+            driver=await async_playwright().start()
+            waiting={'browser':None,'driver':driver,'endpoint':binding['endpoint'],
+                     'binding':binding,'auto':True,'cleanup_only':True,
+                     'created_at':time.time(),'last_activity':time.monotonic(),'pending':True}
+            pending[key]=waiting
+            try:
+                browser,consent_handled=await dom_auto_connect.connect(driver,binding,budget)
+                waiting.update({'browser':browser,'consent_handled':bool(consent_handled),
+                                'cleanup_only':False})
+            except BaseException:
+                await self._stop_pending_auto(key,waiting)
+                raise
+        waiting['last_activity']=time.monotonic()
+        if not selector:
+            try:return await self._auto_candidates(waiting,selected=False)
+            except asyncio.CancelledError:
+                await self._stop_pending_auto(key,waiting)
+                raise
+        try:
+            result=await self._select_auto_page(waiting,tab_url,tab_id,key)
+            waiting['pending']=False
+            pending.pop(key,None)
+            self._external_sessions[key]=waiting
+            self._session_contexts[key]=waiting['context']
+            return result
+        except asyncio.CancelledError:
+            await self._stop_pending_auto(key,waiting)
+            raise
+        except BaseException:
+            # Selection errors do not throw away the consented connection.
+            raise
+
+    async def _stop_pending_auto(self,key,lease):
+        """Stop only the Playwright client and retain failed cleanup for retry."""
+        lease['cleanup_only']=True
+        lease['last_activity']=time.monotonic()
+        try:
+            await asyncio.wait_for(lease['driver'].stop(),timeout=3)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._pending_auto_sessions[key]=lease
+            return False
+        if self._pending_auto_sessions.get(key) is lease:
+            self._pending_auto_sessions.pop(key,None)
+        return True
+
+    @staticmethod
+    def _auto_transport_alive(lease):
+        """Check both Playwright's browser flag and its underlying driver pipe."""
+        browser=lease.get('browser')
+        try:
+            if browser is None or not browser.is_connected():return False
+        except Exception:return False
+        impl=getattr(browser,'_impl_obj',None)
+        connection=getattr(impl,'_connection',None)
+        if connection is None:return True
+        if getattr(connection,'_closed_error',None) is not None:return False
+        transport=getattr(connection,'_transport',None)
+        if transport is None:return True
+        if getattr(transport,'_stopped',False):return False
+        stopped=getattr(transport,'_stopped_future',None)
+        try:
+            if stopped is not None and stopped.done():return False
+        except Exception:return False
+        process=getattr(transport,'_proc',None)
+        if process is not None and getattr(process,'returncode',None) is not None:return False
+        return True
+
+    async def expire_pending_auto_connections(self, idle_seconds=60.0):
+        """Release only idle, unselected Playwright transports; preserve Edge."""
+        now=time.monotonic()
+        expired=[]
+        for key,lease in list(self._pending_auto_sessions.items()):
+            if now-float(lease.get('last_activity',now))<max(0.0,float(idle_seconds)):
+                continue
+            lease['cleanup_only']=True
+            try:
+                await asyncio.wait_for(lease['driver'].stop(),timeout=3)
+                state='completed'
+                self._pending_auto_sessions.pop(key,None)
+            except Exception:
+                state='pending'
+            expired.append({'owner':key[0],'session':key[1],'resource_cleanup':state,
+                            'browser_closed':False,'selected_tabs_closed':False})
+        return {'expired':expired}
+
+    async def _auto_candidates(self, lease, selected=False):
+        candidates=[]
+        try:
+            for context in lease['browser'].contexts[:8]:
+                for page in context.pages[:32]:
+                    if page.is_closed() or not self._is_allowed_url(str(page.url)):continue
+                    observed_url=str(page.url)
+                    try:
+                        session=await context.new_cdp_session(page)
+                        try:info=await session.send('Target.getTargetInfo')
+                        finally:await session.detach()
+                        target=info['targetInfo']['targetId']
+                        title=str(await page.title())[:512]
+                    except Exception:continue
+                    if str(page.url)!=observed_url or not self._is_allowed_url(str(page.url)):continue
+                    candidates.append({'tab_id':target,'url':observed_url[:4096],'title':title})
+        except Exception:
+            pass
+        return {'attached':False,'selection_required':True,'candidates':candidates[:64],
+                'consent_handled':bool(lease.get('consent_handled')),
+                'existing_tabs_closed_on_release':False}
+
+    async def _select_auto_page(self, lease, tab_url, tab_id, key):
+        from ..dom_attachment import SelectedContext
+        pages=[]
+        for context in lease['browser'].contexts:
+            for page in context.pages:
+                if page.is_closed() or not self._is_allowed_url(str(page.url)):continue
+                if tab_url is not None and str(page.url)!=tab_url:continue
+                if tab_id is not None:
+                    probe=await context.new_cdp_session(page)
+                    try:target=(await probe.send('Target.getTargetInfo'))['targetInfo']['targetId']
+                    finally:await probe.detach()
+                    if target!=tab_id:continue
+                pages.append(page)
+        if len(pages)!=1:
+            raise ValueError('Select exactly one allowed existing browser tab')
+        page=pages[0]
+        probe=await page.context.new_cdp_session(page)
+        try:target=(await probe.send('Target.getTargetInfo'))['targetInfo']['targetId']
+        finally:await probe.detach()
+        context=lease.get('context')
+        if context is None:
+            context=SelectedContext(page.context,page,lambda p:self._register_page_resource(p,key))
+        elif context.selected is not page:
+            previous=context.retarget(page)
+            await self._retire_auto_selected_refs(previous,key)
+        lease.update({'context':context,'target_id':target,'attached_at':time.time(),
+                      'expected_url':str(page.url),'pending':False})
+        return {'attached':True,'selection_required':False,'tab_ref':self._tab_ref_for_page(page),
+                'url':page.url,'mode':'selected_cdp_tab','existing_tabs_closed_on_release':False,
+                'consent_handled':bool(lease.get('consent_handled')),
+                'binding':{'mode':'selected_cdp_tab','ownership':'selected_existing_tab',
+                           'target_id':target,'profile_verified':True,
+                           'profile_persistence':'current_edge_profile'}}
+
+    async def _retire_auto_selected_refs(self,page,key):
+        """Invalidate refs for a former selected page while leaving the page open."""
+        stable_ids=[ident for ident,candidate in self._stable_tabs.items() if candidate is page]
+        refs=[self._encode({'type':'tab','id':ident}) for ident in stable_ids]
+        for ref in refs:
+            await self._prune_pinned_elements(tab_ref=ref)
+            self._snapshots.forget_target(ref)
+            for pin,(tab,_) in list(self._snapshot_frames.items()):
+                if tab==ref:self._snapshot_frames.pop(pin,None)
+        for ident in stable_ids:self._stable_tabs.pop(ident,None)
+        sessions=getattr(self,'resource_sessions',None)
+        if not sessions or not refs:return
+        ref_set=set(refs)
+        with sessions.db() as db:
+            for handle,value in db.execute(
+                "SELECT id,value FROM handles WHERE session=? AND kind='dom_tab_ref'",(key[1],)
+            ).fetchall():
+                try:matches=json.loads(value) in ref_set
+                except (ValueError,TypeError):matches=False
+                if matches:
+                    sessions.remember_retired(db,key[1],handle,'lease_expired')
+                    db.execute("UPDATE handles SET kind='dom_closed_tab_ref' WHERE id=?",(handle,))
+            for handle,value in db.execute(
+                "SELECT id,value FROM handles WHERE session=? AND kind='dom_element_ref'",(key[1],)
+            ).fetchall():
+                try:tab_ref=self._decode(json.loads(value),'element').get('tab_ref')
+                except (ValueError,TypeError):tab_ref=None
+                if tab_ref in ref_set:
+                    sessions.remember_retired(db,key[1],handle,'lease_expired')
+                    db.execute("DELETE FROM handles WHERE id=?",(handle,))
 
     async def recover_browser(self,cdp_url,tab_id,expected_url):
         # Explicit reattachment only. No action replay or URL navigation.
@@ -331,6 +615,9 @@ class BrowserDOMService:
     async def _disconnect_playwright(self,include_external=True) -> None:
         for owner,session in list(self._session_contexts):
             if include_external or (owner,session) not in self._external_sessions:await self.release_session(owner,session)
+        if include_external:
+            for owner,session in list(self._pending_auto_sessions):
+                await self.release_session(owner,session)
         if not self._external_sessions:await self._prune_pinned_elements(all_nodes=True)
         browser, playwright = self._browser, self._playwright
         self._browser = self._playwright = None
@@ -365,6 +652,14 @@ class BrowserDOMService:
         if external is None:
             return {'mode':'managed_ephemeral','profile_verified':False,'profile_persistence':'ephemeral'}
         selected=page is external['context'].selected
+        if external.get('auto') and external.get('binding'):
+            return {'mode':'selected_cdp_tab',
+                    'ownership':'selected_existing_tab' if selected else 'owned_child_tab',
+                    'target_id':external.get('target_id') if selected else None,
+                    'attached_at':external.get('attached_at'),
+                    'profile_verified':True,
+                    'profile_persistence':'current_edge_profile',
+                    'url_changed_since_attach':str(page.url)!=external.get('expected_url') if selected else None}
         return {'mode':'selected_cdp_tab','ownership':'selected_existing_tab' if selected else 'owned_child_tab',
                 'target_id':external.get('target_id') if selected else None,
                 'attached_at':external.get('attached_at'),'profile_verified':False,
@@ -1528,6 +1823,7 @@ class BrowserDOMService:
         cleanup_pending=False
         context=self._session_contexts.pop((owner,session),None)
         external=self._external_sessions.pop((owner,session),None)
+        pending=self._pending_auto_sessions.pop((owner,session),None)
         if context is not None:
             pages=list(context.pages)
             refs=[self._encode({'type':'tab','id':key}) for key,page in self._stable_tabs.items() if page in pages]
@@ -1538,8 +1834,24 @@ class BrowserDOMService:
             except Exception:cleanup_pending=True
             for key,page in list(self._stable_tabs.items()):
                 if page in pages:self._stable_tabs.pop(key,None)
-        if external is not None:
-            try:await asyncio.wait_for(external['driver'].stop(),timeout=3)
+        if external is not None or pending is not None:
+            lease=external if external is not None else pending
+            try:await asyncio.wait_for(lease['driver'].stop(),timeout=3)
+            except Exception:
+                cleanup_pending=True
+                if lease.get('auto'):
+                    lease['context']=None
+                    lease['pending']=True
+                    lease['cleanup_only']=True
+                    lease['last_activity']=time.monotonic()
+                    self._pending_auto_sessions[(owner,session)]=lease
+        sessions=getattr(self,'resource_sessions',None)
+        if sessions and (external is not None or pending is not None):
+            try:
+                with sessions.db() as db:
+                    rows=db.execute("SELECT id FROM handles WHERE session=? AND kind LIKE 'dom_%'",(session,)).fetchall()
+                    for handle, in rows:sessions.remember_retired(db,session,handle,'lease_expired')
+                    db.execute("DELETE FROM handles WHERE session=? AND kind LIKE 'dom_%'",(session,))
             except Exception:cleanup_pending=True
         self._snapshots.forget_session(owner,session)
         return {'released':True,'resource_cleanup':'pending' if cleanup_pending else 'completed'}
